@@ -122,10 +122,19 @@ test("renders the Pi invocation in a systemd service", () => {
   assert.match(service, /ExecStart="\/usr\/local\/bin\/node" "\/usr\/local\/lib\/pi\/cli\.js" "--print"/u);
 });
 
+test("escapes systemd working-directory paths without quoting them", () => {
+  const service = renderSystemdService({
+    task: { ...TASK, scheduler: "systemd", workingDirectory: "/tmp/project notes" },
+    invocation: INVOCATION
+  });
+
+  assert.match(service, /WorkingDirectory=\/tmp\/project\\x20notes/u);
+});
+
 test("routes systemd task output to its persistent logs", () => {
   const service = renderSystemdService({ task: { ...TASK, scheduler: "systemd" }, invocation: INVOCATION });
 
-  assert.match(service, /StandardOutput="append:.*\/stdout\.log"[\s\S]*StandardError="append:.*\/stderr\.log"/u);
+  assert.match(service, /StandardOutput=append:.*\/stdout\.log[\s\S]*StandardError=append:.*\/stderr\.log/u);
 });
 
 test("preserves PATH for scheduled systemd checks", () => {

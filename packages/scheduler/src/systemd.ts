@@ -49,12 +49,12 @@ Description=Run scheduled Pi task ${escapeUnitText(task.id)}
 
 [Service]
 Type=oneshot
-WorkingDirectory=${quoteSystemdValue(task.workingDirectory)}
-Environment=${quoteSystemdValue(`PATH=${invocation.environment.PATH}`)}
-Environment=${quoteSystemdValue(`PI_CODING_AGENT_DIR=${invocation.environment.PI_CODING_AGENT_DIR}`)}
+WorkingDirectory=${escapeSystemdSetting(task.workingDirectory)}
+Environment=${quoteSystemdEnvironment(`PATH=${invocation.environment.PATH}`)}
+Environment=${quoteSystemdEnvironment(`PI_CODING_AGENT_DIR=${invocation.environment.PI_CODING_AGENT_DIR}`)}
 ExecStart=${command}
-StandardOutput=${quoteSystemdValue(`append:${task.stdoutPath}`)}
-StandardError=${quoteSystemdValue(`append:${task.stderrPath}`)}
+StandardOutput=append:${escapeSystemdSetting(task.stdoutPath)}
+StandardError=append:${escapeSystemdSetting(task.stderrPath)}
 `;
 }
 
@@ -166,7 +166,7 @@ function quoteSystemdArgument(value: string): string {
   return quoteSystemd({ value, shouldEscapeDollar: true });
 }
 
-function quoteSystemdValue(value: string): string {
+function quoteSystemdEnvironment(value: string): string {
   return quoteSystemd({ value, shouldEscapeDollar: false });
 }
 
@@ -180,6 +180,23 @@ function quoteSystemd({ value, shouldEscapeDollar }: QuoteSystemdParams): string
   let escaped = value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%");
   if (shouldEscapeDollar) escaped = escaped.replaceAll("$", () => "$$");
   return `"${escaped}"`;
+}
+
+function escapeSystemdSetting(value: string): string {
+  assertSingleLine(value);
+  let escaped = "";
+  for (const character of value) {
+    if (character === "%") {
+      escaped += "%%";
+    } else if (character === "\\") {
+      escaped += "\\\\";
+    } else if (character.charCodeAt(0) <= 0x20 || /["'#;]/u.test(character)) {
+      escaped += `\\x${character.charCodeAt(0).toString(16).padStart(2, "0")}`;
+    } else {
+      escaped += character;
+    }
+  }
+  return escaped;
 }
 
 function escapeUnitText(value: string): string {
