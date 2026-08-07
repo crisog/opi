@@ -1,0 +1,43 @@
+{
+  "name": "opi-scheduler",
+  "version": "0.1.0",
+  "description": "Native scheduled Pi tasks for macOS and Linux",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "scheduler",
+    "launchd",
+    "systemd"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@types/node": "22.19.19",
+    "typebox": "1.3.11",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -10,6 +10,10 @@
     "packages/subagents": {
       "entry": ["test/**/*.test.ts"],
       "project": ["src/**/*.ts", "test/**/*.ts"]
+    },
+    "packages/scheduler": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
     }
   }
 }
