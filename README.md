@@ -6,17 +6,20 @@ A monorepo for building an overpowered pi.
 
 ## Development
 
-Install dependencies:
+Use the pinned Node.js version and install dependencies:
 
 ```sh
+nvm install
 npm install
 ```
 
 Workspace packages live under `packages/*`.
 
-Run the common workspace tasks:
+Run the quality checks and tests:
 
 ```sh
-npm run build
+npm run check
 npm test
 ```
+
+Husky runs lint-staged checks before each commit.

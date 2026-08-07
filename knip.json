@@ -1,0 +1,15 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "eslint": false,
+  "workspaces": {
+    ".": {
+      "entry": ["eslint.config.mjs"],
+      "project": ["*.{js,mjs,ts}"],
+      "ignoreDependencies": ["lint-staged"]
+    },
+    "packages/subagents": {
+      "entry": ["test/**/*.test.ts"],
+      "project": ["src/**/*.ts", "test/**/*.ts"]
+    }
+  }
+}
