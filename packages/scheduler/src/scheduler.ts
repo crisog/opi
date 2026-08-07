@@ -64,6 +64,7 @@ export type SchedulerKind = Static<typeof SCHEDULER_KIND_SCHEMA>;
 export type Schedule = Static<typeof SCHEDULE_SCHEMA>;
 export type BuiltinToolName = Static<typeof BUILTIN_TOOL_NAME_SCHEMA>;
 export type ThinkingLevel = Static<typeof THINKING_LEVEL_SCHEMA>;
+export type Weekday = Static<typeof WEEKDAY_SCHEMA>;
 export type ScheduledTask = Static<typeof SCHEDULED_TASK_SCHEMA>;
 
 export type PiInvocation = {
@@ -188,6 +189,11 @@ export function formatSchedule(schedule: Schedule): string {
   const time = `${schedule.hour.toString().padStart(2, "0")}:${schedule.minute.toString().padStart(2, "0")}`;
   if (!schedule.weekdays) return `daily at ${time}`;
   return `${schedule.weekdays.join(",")} at ${time}`;
+}
+
+export function formatCommandFailure(result: CommandResult): string {
+  if (result.killed) return "command was cancelled";
+  return result.stderr.trim() || `command exited with code ${result.code}`;
 }
 
 export function formatError(error: unknown): string {

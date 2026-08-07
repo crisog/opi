@@ -1,10 +1,25 @@
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ExecuteCommand, PiInvocation, Schedule, ScheduledTask } from "./scheduler.ts";
+import {
+  formatCommandFailure,
+  type ExecuteCommand,
+  type PiInvocation,
+  type Schedule,
+  type ScheduledTask,
+  type Weekday
+} from "./scheduler.ts";
 
 const SYSTEMD_UNIT_PREFIX = "opi-scheduler";
-const WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const WEEKDAY_NAMES: Record<Weekday, string> = {
+  1: "Mon",
+  2: "Tue",
+  3: "Wed",
+  4: "Thu",
+  5: "Fri",
+  6: "Sat",
+  7: "Sun"
+};
 
 type RenderSystemdServiceParams = {
   task: ScheduledTask;
@@ -102,7 +117,7 @@ export async function installSystemdTask({
   const reload = await executeCommand({ command: "systemctl", args: ["--user", "daemon-reload"] });
   if (reload.code !== 0 || reload.killed) {
     await removeUnitFiles(paths);
-    throw new Error(`Could not reload systemd user units: ${commandFailure(reload)}`);
+    throw new Error(`Could not reload systemd user units: ${formatCommandFailure(reload)}`);
   }
 
   const timerUnit = `${getSystemdUnitName(task.id)}.timer`;
@@ -116,12 +131,12 @@ export async function installSystemdTask({
   await removeUnitFiles(paths);
   const cleanupReload = await executeCommand({ command: "systemctl", args: ["--user", "daemon-reload"] });
   const cleanupFailures: string[] = [];
-  if (disable.code !== 0 || disable.killed) cleanupFailures.push(`disable failed: ${commandFailure(disable)}`);
+  if (disable.code !== 0 || disable.killed) cleanupFailures.push(`disable failed: ${formatCommandFailure(disable)}`);
   if (cleanupReload.code !== 0 || cleanupReload.killed) {
-    cleanupFailures.push(`reload failed: ${commandFailure(cleanupReload)}`);
+    cleanupFailures.push(`reload failed: ${formatCommandFailure(cleanupReload)}`);
   }
   const cleanupMessage = cleanupFailures.length > 0 ? `; cleanup ${cleanupFailures.join("; ")}` : "";
-  throw new Error(`Could not enable systemd timer ${task.id}: ${commandFailure(enable)}${cleanupMessage}`);
+  throw new Error(`Could not enable systemd timer ${task.id}: ${formatCommandFailure(enable)}${cleanupMessage}`);
 }
 
 export async function removeSystemdTask({
@@ -135,13 +150,13 @@ export async function removeSystemdTask({
     args: ["--user", "disable", "--now", timerUnit]
   });
   if (disable.code !== 0 || disable.killed) {
-    throw new Error(`Could not disable systemd timer ${id}: ${commandFailure(disable)}`);
+    throw new Error(`Could not disable systemd timer ${id}: ${formatCommandFailure(disable)}`);
   }
 
   await removeUnitFiles(getSystemdUnitPaths({ userUnitDirectory, id }));
   const reload = await executeCommand({ command: "systemctl", args: ["--user", "daemon-reload"] });
   if (reload.code !== 0 || reload.killed) {
-    throw new Error(`Removed ${id}, but could not reload systemd user units: ${commandFailure(reload)}`);
+    throw new Error(`Removed ${id}, but could not reload systemd user units: ${formatCommandFailure(reload)}`);
   }
 }
 
@@ -151,9 +166,7 @@ function buildOnCalendarValues(schedule: Schedule): string[] {
 
   const values: string[] = [];
   for (const weekday of schedule.weekdays) {
-    const weekdayName = WEEKDAY_NAMES[weekday - 1];
-    if (!weekdayName) throw new Error(`Invalid weekday: ${weekday}`);
-    values.push(`${weekdayName} *-*-* ${time}`);
+    values.push(`${WEEKDAY_NAMES[weekday]} *-*-* ${time}`);
   }
   return values;
 }
@@ -206,9 +219,4 @@ function escapeUnitText(value: string): string {
 
 function assertSingleLine(value: string): void {
   if (/[\r\n\0]/u.test(value)) throw new Error("systemd values must not contain control characters.");
-}
-
-function commandFailure(result: { stderr: string; killed: boolean; code: number }): string {
-  if (result.killed) return "command was cancelled";
-  return result.stderr.trim() || `command exited with code ${result.code}`;
 }

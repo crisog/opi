@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ExecuteCommand, PiInvocation, ScheduledTask } from "./scheduler.ts";
+import { formatCommandFailure, type ExecuteCommand, type PiInvocation, type ScheduledTask } from "./scheduler.ts";
 
 const LAUNCHD_LABEL_PREFIX = "com.opi.scheduler";
 
@@ -96,7 +96,7 @@ export async function installLaunchdTask({
   if (result.code === 0 && !result.killed) return plistPath;
 
   await rm(plistPath, { force: true });
-  throw new Error(`Could not install launchd task ${task.id}: ${commandFailure(result)}`);
+  throw new Error(`Could not install launchd task ${task.id}: ${formatCommandFailure(result)}`);
 }
 
 export async function removeLaunchdTask({
@@ -112,10 +112,10 @@ export async function removeLaunchdTask({
   if (status.code === 0) {
     const result = await executeCommand({ command: "launchctl", args: ["bootout", domainTarget] });
     if (result.code !== 0 || result.killed) {
-      throw new Error(`Could not unload launchd task ${id}: ${commandFailure(result)}`);
+      throw new Error(`Could not unload launchd task ${id}: ${formatCommandFailure(result)}`);
     }
   } else if (!isMissingService(status)) {
-    throw new Error(`Could not inspect launchd task ${id}: ${commandFailure(status)}`);
+    throw new Error(`Could not inspect launchd task ${id}: ${formatCommandFailure(status)}`);
   }
 
   await rm(getLaunchdPlistPath({ launchAgentsDirectory, id }), { force: true });
@@ -154,9 +154,4 @@ function escapeXml(value: string): string {
 
 function isMissingService(result: { stdout: string; stderr: string }): boolean {
   return /could not find service|service not found/u.test(`${result.stdout}\n${result.stderr}`.toLowerCase());
-}
-
-function commandFailure(result: { stderr: string; killed: boolean; code: number }): string {
-  if (result.killed) return "command was cancelled";
-  return result.stderr.trim() || `command exited with code ${result.code}`;
 }

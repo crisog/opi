@@ -19,6 +19,7 @@ import {
   THINKING_LEVELS,
   buildTaskPaths,
   createTaskState,
+  formatCommandFailure,
   formatError,
   formatSchedule,
   getSchedulerKind,
@@ -29,7 +30,6 @@ import {
   type PiInvocation,
   type Schedule,
   type ScheduledTask,
-  type SchedulerKind,
   type ThinkingLevel
 } from "./scheduler.ts";
 import { installSystemdTask, removeSystemdTask } from "./systemd.ts";
@@ -104,8 +104,6 @@ const SCHEDULER_PARAMS = Type.Object(
   { additionalProperties: false }
 );
 
-class SchedulerCancelledError extends Error {}
-
 type ChildModel = {
   provider: string;
   id: string;
@@ -130,11 +128,19 @@ type ResolveRequiredSkillsParams = {
   names: string[];
 };
 
+type NativeScheduler =
+  | {
+      kind: "launchd";
+      userId: number;
+    }
+  | {
+      kind: "systemd";
+    };
+
 type CreateScheduledTaskParams = {
   executeCommand: ExecuteCommand;
   schedulerRoot: string;
-  scheduler: SchedulerKind;
-  userId?: number;
+  nativeScheduler: NativeScheduler;
   id: string;
   instructions: string;
   schedule: Schedule;
@@ -149,8 +155,7 @@ type CreateScheduledTaskParams = {
 type RemoveScheduledTaskParams = {
   executeCommand: ExecuteCommand;
   schedulerRoot: string;
-  scheduler: SchedulerKind;
-  userId?: number;
+  nativeScheduler: NativeScheduler;
   id: string;
 };
 
@@ -225,17 +230,16 @@ export default function registerScheduler(pi: ExtensionAPI): void {
     ],
     parameters: SCHEDULER_PARAMS,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const scheduler = getSchedulerKind(process.platform);
-      const userId = getUserId(scheduler);
+      const nativeScheduler = getNativeScheduler(process.platform);
       const executeCommand: ExecuteCommand = async ({ command, args }) =>
         pi.exec(command, args, { cwd: ctx.cwd, signal });
-      await assertSchedulerAvailable({ executeCommand, scheduler, userId });
+      await assertSchedulerAvailable({ executeCommand, nativeScheduler, signal });
 
       if (params.action === "list") {
         const tasks = await listScheduledTasks(join(getAgentDir(), "scheduler"));
         const text = tasks.length === 0 ? "No scheduled tasks." : tasks.map(formatScheduledTask).join("\n\n");
         return {
-          content: [{ type: "text", text: (await formatOutput(text)).text }],
+          content: [{ type: "text", text: await formatOutput(text) }],
           details: { action: params.action, count: tasks.length }
         };
       }
@@ -243,7 +247,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
       const id = requireValue({ value: params.id, name: "id", action: params.action });
       const schedulerRoot = join(getAgentDir(), "scheduler");
       if (params.action === "remove") {
-        await removeScheduledTask({ executeCommand, schedulerRoot, scheduler, userId, id });
+        await removeScheduledTask({ executeCommand, schedulerRoot, nativeScheduler, id });
         return {
           content: [{ type: "text", text: `Removed scheduled task: ${id}` }],
           details: { action: params.action, id }
@@ -268,8 +272,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
       const task = await createScheduledTask({
         executeCommand,
         schedulerRoot,
-        scheduler,
-        userId,
+        nativeScheduler,
         id,
         instructions,
         schedule,
@@ -291,8 +294,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
 async function createScheduledTask({
   executeCommand,
   schedulerRoot,
-  scheduler,
-  userId,
+  nativeScheduler,
   id,
   instructions,
   schedule,
@@ -306,7 +308,7 @@ async function createScheduledTask({
   const paths = buildTaskPaths({ schedulerRoot, id });
   const task: ScheduledTask = {
     id,
-    scheduler,
+    scheduler: nativeScheduler.kind,
     schedule,
     workingDirectory,
     tools,
@@ -333,14 +335,13 @@ async function createScheduledTask({
     });
     const invocation = getPiInvocation(args);
 
-    if (scheduler === "launchd") {
-      if (userId === undefined) throw new Error("launchd requires a user ID.");
+    if (nativeScheduler.kind === "launchd") {
       await installLaunchdTask({
         task,
         invocation,
         executeCommand,
         launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
-        userId
+        userId: nativeScheduler.userId
       });
     } else {
       await installSystemdTask({
@@ -352,7 +353,6 @@ async function createScheduledTask({
     }
   } catch (error) {
     if (hasCreatedState) await rm(paths.directory, { recursive: true, force: true });
-    if (error instanceof SchedulerCancelledError) throw error;
     throw new Error(`Could not create scheduled task ${id}: ${formatError(error)}`, { cause: error });
   }
 
@@ -362,24 +362,22 @@ async function createScheduledTask({
 async function removeScheduledTask({
   executeCommand,
   schedulerRoot,
-  scheduler,
-  userId,
+  nativeScheduler,
   id
 }: RemoveScheduledTaskParams): Promise<void> {
   const paths = buildTaskPaths({ schedulerRoot, id });
   if (!existsSync(paths.metadata)) throw new Error(`Scheduled task does not exist: ${id}`);
   const task = await readScheduledTask(paths.metadata);
-  if (task.scheduler !== scheduler) {
-    throw new Error(`Scheduled task ${id} belongs to ${task.scheduler}, not ${scheduler}.`);
+  if (task.scheduler !== nativeScheduler.kind) {
+    throw new Error(`Scheduled task ${id} belongs to ${task.scheduler}, not ${nativeScheduler.kind}.`);
   }
 
-  if (scheduler === "launchd") {
-    if (userId === undefined) throw new Error("launchd requires a user ID.");
+  if (nativeScheduler.kind === "launchd") {
     await removeLaunchdTask({
       executeCommand,
       id,
       launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
-      userId
+      userId: nativeScheduler.userId
     });
   } else {
     await removeSystemdTask({
@@ -393,40 +391,46 @@ async function removeScheduledTask({
 
 type AssertSchedulerAvailableParams = {
   executeCommand: ExecuteCommand;
-  scheduler: SchedulerKind;
-  userId?: number;
+  nativeScheduler: NativeScheduler;
+  signal?: AbortSignal;
 };
 
 async function assertSchedulerAvailable({
   executeCommand,
-  scheduler,
-  userId
+  nativeScheduler,
+  signal
 }: AssertSchedulerAvailableParams): Promise<void> {
+  let result: Awaited<ReturnType<ExecuteCommand>>;
   try {
-    if (scheduler === "launchd") {
-      if (userId === undefined) throw new Error("launchd requires a user ID.");
-      const result = await executeCommand({ command: "launchctl", args: ["print", `gui/${userId}`] });
-      if (result.killed) throw new SchedulerCancelledError("Scheduler operation was cancelled.");
-      if (result.code === 0) return;
-      throw new Error(result.stderr.trim() || `launchctl exited with code ${result.code}`);
+    if (nativeScheduler.kind === "launchd") {
+      result = await executeCommand({
+        command: "launchctl",
+        args: ["print", `gui/${nativeScheduler.userId}`]
+      });
+    } else {
+      result = await executeCommand({ command: "systemctl", args: ["--user", "show-environment"] });
     }
-
-    const result = await executeCommand({ command: "systemctl", args: ["--user", "show-environment"] });
-    if (result.killed) throw new SchedulerCancelledError("Scheduler operation was cancelled.");
-    if (result.code === 0) return;
-    throw new Error(result.stderr.trim() || `systemctl exited with code ${result.code}`);
   } catch (error) {
-    if (error instanceof SchedulerCancelledError) throw error;
-    throw new Error(`opi-scheduler is unsupported because ${scheduler} is unavailable: ${formatError(error)}`, {
-      cause: error
-    });
+    if (signal?.aborted) throw new Error("Scheduler operation was cancelled.", { cause: error });
+    throw new Error(
+      `opi-scheduler is unsupported because ${nativeScheduler.kind} is unavailable: ${formatError(error)}`,
+      { cause: error }
+    );
+  }
+
+  if (result.killed) throw new Error("Scheduler operation was cancelled.");
+  if (result.code !== 0) {
+    throw new Error(
+      `opi-scheduler is unsupported because ${nativeScheduler.kind} is unavailable: ${formatCommandFailure(result)}`
+    );
   }
 }
 
-function getUserId(scheduler: SchedulerKind): number | undefined {
-  if (scheduler !== "launchd") return undefined;
+function getNativeScheduler(platform: NodeJS.Platform): NativeScheduler {
+  const kind = getSchedulerKind(platform);
+  if (kind === "systemd") return { kind };
   if (!process.getuid) throw new Error("opi-scheduler cannot determine the current macOS user ID.");
-  return process.getuid();
+  return { kind, userId: process.getuid() };
 }
 
 type RequireValueParams = {
@@ -473,20 +477,12 @@ function formatScheduledTask(task: ScheduledTask): string {
   return `${task.id}\nSchedule: ${formatSchedule(task.schedule)}\nDirectory: ${task.workingDirectory}\nModel: ${model}\nThinking: ${thinkingLevel}\nTools: ${task.tools.join(", ")}\nSkills: ${skills}\nOutput: ${task.stdoutPath}\nErrors: ${task.stderrPath}`;
 }
 
-type FormattedOutput = {
-  text: string;
-  outputPath?: string;
-};
-
-async function formatOutput(output: string): Promise<FormattedOutput> {
+async function formatOutput(output: string): Promise<string> {
   const truncated = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
-  if (!truncated.truncated) return { text: output };
+  if (!truncated.truncated) return output;
 
   const directory = await mkdtemp(join(tmpdir(), "opi-scheduler-"));
   const outputPath = join(directory, "output.txt");
   await writeFile(outputPath, output, "utf8");
-  return {
-    text: `${truncated.content}\n\n[Output truncated from ${formatSize(truncated.totalBytes)}. Full output: ${outputPath}]`,
-    outputPath
-  };
+  return `${truncated.content}\n\n[Output truncated from ${formatSize(truncated.totalBytes)}. Full output: ${outputPath}]`;
 }
