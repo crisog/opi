@@ -16,7 +16,7 @@ Guidance for coding agents working in this repository.
 - Pi extensions are TypeScript source loaded directly by Pi; do not add a build step unless publishing requires one.
 - Runtime dependencies belong in `dependencies`. Pi-provided packages belong in `peerDependencies` and development tooling in `devDependencies`.
 - Keep package manifests publishable with an explicit `pi` resource manifest.
-- Support Node.js 22 or newer.
+- Use the Node.js version pinned in `.nvmrc` and `.node-version` and the npm version pinned in `packageManager`. Keep root engine requirements aligned with them. Published package engines must reflect their actual runtime minimum instead of the development toolchain.
 
 ## TypeScript
 
