@@ -20,14 +20,25 @@ Guidance for coding agents working in this repository.
 
 ## TypeScript
 
-- Keep TypeScript strict and preserve the additional checks in each package's `tsconfig.json`.
-- Treat external data as `unknown` and narrow it at the boundary. Do not use `any` or assertions to invent types.
-- Use named object parameters when a function needs more than one argument.
-- Put object fields on separate lines when the object has multiple fields.
-- Use named constants instead of unexplained numeric limits.
+- Keep TypeScript strict with `noUncheckedIndexedAccess`, `noPropertyAccessFromIndexSignature`, `noImplicitOverride`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUnusedLocals`, and `noUnusedParameters`. Narrow before indexing arrays or records.
+- Treat external data as `unknown` and narrow it at the boundary. Do not use `any` in application code.
+- Do not use assertions to invent types. `as const` is allowed; avoid `as SomeType` and `as unknown as` outside test mocks. Prefer runtime checks or the package's existing schema library.
+- Use `void` only as a return type, never as an operator. Await promises explicitly.
+- Functions with more than one parameter take one object parameter. Define its named object type above the function; do not use inline object signatures.
+- Use `type` consistently instead of `interface`.
+- Put every field of an object type on its own line.
+- Prefix boolean names with `is`, `has`, `should`, or `can`.
+- Do not use TypeScript enums. Use `as const` values and derive the union type.
+- Declare named constants at the top of the file in `UPPER_SNAKE_CASE`.
+- Replace unexplained numeric limits with named constants and use separators in numeric literals greater than or equal to `1_000`.
 - Prefer straightforward loops and conditionals over dense chains or nested ternaries.
 - Use `undefined` for optional values and `null` only for a known absence.
 - Use kebab-case file names and named exports, except where Pi requires a default extension factory.
+
+## Error handling
+
+- Throw when an operation cannot complete; do not encode failures as successful results.
+- Catch errors only to add context, clean up, or deliberately degrade a non-critical operation. Never swallow errors.
 
 ## Abstraction
 
@@ -60,6 +71,7 @@ Guidance for coding agents working in this repository.
 - Cover the primary workflow and critical boundaries: child invocation, output parsing, cancellation, failure, and truncation when relevant.
 - Add a regression test before fixing a reported bug.
 - Keep tests inexpensive and deterministic. Use a real Pi smoke test when process integration changes, but do not make networked model calls part of the normal test suite.
+- Do not add tests solely to increase coverage. Use coverage only to find important behavior that lacks protection.
 
 ## Validation
 
@@ -81,6 +93,7 @@ npm pack --workspace=<workspace-name> --dry-run
 - Never commit directly to `main`. Use a focused feature branch.
 - Inspect the full diff before committing.
 - Keep commits cohesive and use Conventional Commits.
+- Keep changes in one PR when they share a root cause, fix pattern, or dependency. Split them when they have different root causes, risk profiles, or rollback needs.
 - Do not push, publish, or create a PR unless the user asks.
 - Resolve routine implementation details autonomously. Ask only when a decision changes product behavior or creates a meaningful tradeoff.
 - Do not modify unrelated files or clean up code outside the task's scope.
