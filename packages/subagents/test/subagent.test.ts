@@ -11,7 +11,8 @@ import {
   executeReview,
   formatReviewResult,
   parseChildResponse,
-  parseReviewResult
+  parseReviewResult,
+  resolveRequestedSkills
 } from "../src/index.ts";
 
 test("builds an isolated child invocation that inherits model and thinking", () => {
@@ -38,6 +39,63 @@ test("builds an isolated child invocation that inherits model and thinking", () 
     "high",
     "Review the diff"
   ]);
+});
+
+test("builds a child invocation with explicitly required skills", () => {
+  const args = buildChildArgs({
+    isProjectTrusted: true,
+    skills: [
+      {
+        name: "planout",
+        path: "/skills/planout/SKILL.md"
+      }
+    ],
+    task: "Plan docs/spec.md"
+  });
+
+  assert.deepEqual(args, [
+    "--mode",
+    "json",
+    "--print",
+    "--no-session",
+    "--no-extensions",
+    "--approve",
+    "--skill",
+    "/skills/planout/SKILL.md",
+    "--append-system-prompt",
+    "You must use the following skills for this delegated task:\n- planout: /skills/planout/SKILL.md\nRead each required SKILL.md in full before starting, follow its instructions, and resolve relative references from its containing directory.",
+    "Plan docs/spec.md"
+  ]);
+});
+
+test("resolves a requested skill from Pi's available commands", () => {
+  const commands: ReturnType<ExtensionAPI["getCommands"]> = [
+    {
+      name: "skill:planout",
+      description: "Write an implementation plan",
+      source: "skill",
+      sourceInfo: {
+        path: "/skills/planout/SKILL.md",
+        source: "settings",
+        scope: "user",
+        origin: "top-level"
+      }
+    }
+  ];
+
+  assert.deepEqual(resolveRequestedSkills({ commands, skillNames: ["planout"] }), [
+    {
+      name: "planout",
+      path: "/skills/planout/SKILL.md"
+    }
+  ]);
+});
+
+test("rejects a requested skill that is not available to Pi", () => {
+  assert.throws(
+    () => resolveRequestedSkills({ commands: [], skillNames: ["missing-skill"] }),
+    /Required subagent skill is not available: missing-skill/
+  );
 });
 
 test("builds a read-only isolated review invocation", () => {
