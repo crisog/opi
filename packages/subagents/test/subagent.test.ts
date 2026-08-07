@@ -15,13 +15,10 @@ import {
   resolveRequestedSkills
 } from "../src/index.ts";
 
-test("builds an isolated child invocation that inherits model and thinking", () => {
+test("builds an isolated child invocation with the selected model and thinking level", () => {
   const args = buildChildArgs({
     isProjectTrusted: true,
-    model: {
-      provider: "openai-codex",
-      id: "gpt-5.6-luna"
-    },
+    model: "openai-codex/gpt-5.6-luna",
     thinkingLevel: "high",
     task: "Review the diff"
   });
@@ -100,10 +97,7 @@ test("rejects a requested skill that is not available to Pi", () => {
 
 test("builds a read-only isolated review invocation", () => {
   const args = buildReviewChildArgs({
-    model: {
-      provider: "openai-codex",
-      id: "gpt-5.6-luna"
-    },
+    model: "openai-codex/gpt-5.6-luna",
     thinkingLevel: "high",
     task: "Review from an immutable patch"
   });
