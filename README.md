@@ -2,37 +2,27 @@
 
 **o(verpowered)pi**
 
-A monorepo for building an overpowered pi.
+A collection of extensions for [Pi](https://github.com/earendil-works/pi).
 
-## Development
+## Packages
 
-Use the pinned Node.js and npm versions, then install dependencies:
+- [opi-subagents](packages/subagents): isolated task and review subagents
+- [opi-scheduler](packages/scheduler): recurring Pi tasks backed by `launchd` or systemd
 
-```sh
-nvm install
-npm install --global npm@12.0.2
-npm ci
-```
+## Install
 
-Workspace packages live under `packages/*`.
-
-Run the quality checks and tests:
+Clone the repository:
 
 ```sh
-npm run check
-npm test
+git clone https://github.com/crisog/opi.git
+cd opi
 ```
 
-Husky runs lint-staged checks before each commit.
-
-## Dependency security
-
-npm rejects unreviewed install scripts, newly published releases, and non-registry transitive dependencies. Review dependency scripts explicitly when an install reports one:
+Then install whichever packages you want:
 
 ```sh
-npm install-scripts ls
-npm install-scripts approve <package>
-npm install-scripts deny <package>
+pi install ./packages/subagents
+pi install ./packages/scheduler
 ```
 
-CI verifies registry signatures and provenance attestations with `npm audit signatures`.
+Pi records these as local packages, so keep the checkout and use `git pull` to update it. See each package's README for usage and platform requirements.
