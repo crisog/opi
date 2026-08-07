@@ -4,6 +4,8 @@ Minimal subagents for Pi.
 
 The package adds one `subagent` tool. It starts an isolated, ephemeral Pi process in the current working directory and returns its final response. The child inherits the parent's model and thinking level. Extensions are disabled in the child to prevent recursive delegation.
 
+The default `task` kind handles focused research and investigation. The `review` kind reviews committed branch changes from a required Git base ref. Reviews require a trusted project and clean working tree, run with only Pi's read-only tools, validate a structured fail-closed verdict, and reject results that become stale before completion.
+
 ## Try locally
 
 ```sh
@@ -14,6 +16,12 @@ Then ask Pi:
 
 ```text
 Use a subagent to inspect this repository and identify the main entry points.
+```
+
+For an independent review:
+
+```text
+Use a review subagent with base origin/main to review the committed branch changes against their documented behavior.
 ```
 
 ## Install
