@@ -13,6 +13,7 @@ import { Compile } from "typebox/compile";
 
 const REVIEW_KINDS = ["task", "review"] as const;
 const REVIEW_SEVERITIES = ["high", "medium", "low"] as const;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const REVIEW_VERDICTS = ["approve", "changes_requested", "review_failed"] as const;
 const REVIEW_READ_ONLY_TOOLS = "read,grep,find,ls";
 const REVIEW_SYSTEM_PROMPT =
@@ -54,6 +55,12 @@ const REVIEW_RESULT_SCHEMA = Type.Object(
 
 const validateReviewResult = Compile(REVIEW_RESULT_SCHEMA);
 
+const THINKING_LEVEL_SCHEMA = Type.Unsafe<(typeof THINKING_LEVELS)[number]>({
+  type: "string",
+  enum: THINKING_LEVELS,
+  description: "Pi thinking level; defaults to the parent thinking level"
+});
+
 const SUBAGENT_PARAMS = Type.Object({
   kind: Type.Optional(
     Type.Union([Type.Literal(REVIEW_KINDS[0]), Type.Literal(REVIEW_KINDS[1])], {
@@ -64,6 +71,13 @@ const SUBAGENT_PARAMS = Type.Object({
     minLength: 1,
     description: "Self-contained task or factual review brief"
   }),
+  model: Type.Optional(
+    Type.String({
+      minLength: 1,
+      description: "Pi model pattern or provider/model ID; defaults to the parent model"
+    })
+  ),
+  thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA),
   skills: Type.Optional(
     Type.Array(
       Type.String({
@@ -109,7 +123,7 @@ type ChildSkill = {
 
 type BuildChildArgsParams = {
   isProjectTrusted: boolean;
-  model?: ChildModel;
+  model?: string;
   thinkingLevel?: string;
   skills?: ChildSkill[];
   task: string;
@@ -121,7 +135,7 @@ type ResolveRequestedSkillsParams = {
 };
 
 type BuildReviewChildArgsParams = {
-  model?: ChildModel;
+  model?: string;
   thinkingLevel?: string;
   task: string;
 };
@@ -148,7 +162,7 @@ type ReviewExecutionParams = {
   cwd: string;
   base: string;
   brief: string;
-  model?: ChildModel;
+  model?: string;
   thinkingLevel?: string;
   signal?: AbortSignal;
 };
@@ -213,13 +227,18 @@ export function buildReviewChildArgs({ model, thinkingLevel, task }: BuildReview
 
 type AppendModelArgsParams = {
   args: string[];
-  model?: ChildModel;
+  model?: string;
   thinkingLevel?: string;
 };
 
 function appendModelArgs({ args, model, thinkingLevel }: AppendModelArgsParams): void {
-  if (model) args.push("--model", `${model.provider}/${model.id}`);
+  if (model) args.push("--model", model);
   if (thinkingLevel) args.push("--thinking", thinkingLevel);
+}
+
+function formatChildModel(model: ChildModel | undefined): string | undefined {
+  if (!model) return undefined;
+  return `${model.provider}/${model.id}`;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -488,11 +507,14 @@ export default function registerSubagent(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use kind=review with base for independent review of committed changes.",
       "Provide a self-contained task because the child cannot see this conversation.",
-      "Pass skills to subagent when delegated work must follow specific available skills."
+      "Pass skills to subagent when delegated work must follow specific available skills.",
+      "Pass model or thinkingLevel to subagent only when delegated work needs an explicit override."
     ],
     parameters: SUBAGENT_PARAMS,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const kind = params.kind ?? "task";
+      const model = params.model ?? formatChildModel(ctx.model);
+      const thinkingLevel = params.thinkingLevel ?? ctx.thinkingLevel;
       onUpdate?.({
         content: [{ type: "text", text: kind === "review" ? "Independent review running..." : "Subagent running..." }],
         details: { status: "running", kind }
@@ -509,8 +531,8 @@ export default function registerSubagent(pi: ExtensionAPI): void {
           cwd: ctx.cwd,
           base: params.base,
           brief: params.task,
-          model: ctx.model,
-          thinkingLevel: ctx.thinkingLevel,
+          model,
+          thinkingLevel,
           signal
         });
         const output = await formatOutput(review.text);
@@ -533,8 +555,8 @@ export default function registerSubagent(pi: ExtensionAPI): void {
       });
       const args = buildChildArgs({
         isProjectTrusted: ctx.isProjectTrusted(),
-        model: ctx.model,
-        thinkingLevel: ctx.thinkingLevel,
+        model,
+        thinkingLevel,
         skills,
         task: params.task
       });
