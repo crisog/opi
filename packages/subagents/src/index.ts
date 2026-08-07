@@ -23,6 +23,8 @@ const MAX_REVIEW_SUMMARY_LENGTH = 500;
 const MAX_REVIEW_FINDINGS = 20;
 const MAX_REVIEW_LOCATION_LENGTH = 500;
 const MAX_REVIEW_CLAIM_LENGTH = 1_000;
+const MAX_SKILL_NAME_LENGTH = 64;
+const SKILL_NAME_PATTERN = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
 
 const REVIEW_FINDING_SCHEMA = Type.Object(
   {
@@ -62,6 +64,17 @@ const SUBAGENT_PARAMS = Type.Object({
     minLength: 1,
     description: "Self-contained task or factual review brief"
   }),
+  skills: Type.Optional(
+    Type.Array(
+      Type.String({
+        minLength: 1,
+        maxLength: MAX_SKILL_NAME_LENGTH,
+        pattern: SKILL_NAME_PATTERN,
+        description: "Required skill name without the skill: prefix"
+      }),
+      { description: "Skills the task subagent must load and follow" }
+    )
+  ),
   base: Type.Optional(
     Type.String({
       minLength: 1,
@@ -89,11 +102,22 @@ type ChildModel = {
   id: string;
 };
 
+type ChildSkill = {
+  name: string;
+  path: string;
+};
+
 type BuildChildArgsParams = {
   isProjectTrusted: boolean;
   model?: ChildModel;
   thinkingLevel?: string;
+  skills?: ChildSkill[];
   task: string;
+};
+
+type ResolveRequestedSkillsParams = {
+  commands: ReturnType<ExtensionAPI["getCommands"]>;
+  skillNames: string[];
 };
 
 type BuildReviewChildArgsParams = {
@@ -129,12 +153,42 @@ type ReviewExecutionParams = {
   signal?: AbortSignal;
 };
 
-export function buildChildArgs({ isProjectTrusted, model, thinkingLevel, task }: BuildChildArgsParams): string[] {
+export function buildChildArgs({
+  isProjectTrusted,
+  model,
+  thinkingLevel,
+  skills = [],
+  task
+}: BuildChildArgsParams): string[] {
   const args = ["--mode", "json", "--print", "--no-session", "--no-extensions"];
   if (isProjectTrusted) args.push("--approve");
+  for (const skill of skills) args.push("--skill", skill.path);
+  if (skills.length > 0) args.push("--append-system-prompt", buildRequiredSkillsPrompt(skills));
   appendModelArgs({ args, model, thinkingLevel });
   args.push(task);
   return args;
+}
+
+function buildRequiredSkillsPrompt(skills: ChildSkill[]): string {
+  const skillLines = skills.map((skill) => `- ${skill.name}: ${skill.path}`).join("\n");
+  return `You must use the following skills for this delegated task:\n${skillLines}\nRead each required SKILL.md in full before starting, follow its instructions, and resolve relative references from its containing directory.`;
+}
+
+export function resolveRequestedSkills({ commands, skillNames }: ResolveRequestedSkillsParams): ChildSkill[] {
+  const skills: ChildSkill[] = [];
+  const resolvedNames = new Set<string>();
+
+  for (const skillName of skillNames) {
+    if (resolvedNames.has(skillName)) continue;
+    const command = commands.find(
+      (candidate) => candidate.source === "skill" && candidate.name === `skill:${skillName}`
+    );
+    if (!command) throw new Error(`Required subagent skill is not available: ${skillName}`);
+    skills.push({ name: skillName, path: command.sourceInfo.path });
+    resolvedNames.add(skillName);
+  }
+
+  return skills;
 }
 
 export function buildReviewChildArgs({ model, thinkingLevel, task }: BuildReviewChildArgsParams): string[] {
@@ -433,7 +487,8 @@ export default function registerSubagent(pi: ExtensionAPI): void {
     promptSnippet: "Delegate focused work or an independent review",
     promptGuidelines: [
       "Use kind=review with base for independent review of committed changes.",
-      "Provide a self-contained task because the child cannot see this conversation."
+      "Provide a self-contained task because the child cannot see this conversation.",
+      "Pass skills to subagent when delegated work must follow specific available skills."
     ],
     parameters: SUBAGENT_PARAMS,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -444,6 +499,9 @@ export default function registerSubagent(pi: ExtensionAPI): void {
       });
 
       if (kind === "review") {
+        if (params.skills && params.skills.length > 0) {
+          throw new Error("Independent reviews do not support skills.");
+        }
         if (!ctx.isProjectTrusted()) throw new Error("Independent review requires a trusted project.");
         if (!params.base) throw new Error("Independent review requires a Git base ref.");
         const review = await executeReview({
@@ -469,10 +527,15 @@ export default function registerSubagent(pi: ExtensionAPI): void {
         };
       }
 
+      const skills = resolveRequestedSkills({
+        commands: pi.getCommands(),
+        skillNames: params.skills ?? []
+      });
       const args = buildChildArgs({
         isProjectTrusted: ctx.isProjectTrusted(),
         model: ctx.model,
         thinkingLevel: ctx.thinkingLevel,
+        skills,
         task: params.task
       });
       const child = await pi.exec("pi", args, {
