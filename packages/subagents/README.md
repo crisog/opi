@@ -2,7 +2,7 @@
 
 Minimal subagents for Pi.
 
-The package adds one `subagent` tool. It starts an isolated, ephemeral Pi process in the current working directory and returns its final response. The child inherits the parent's model and thinking level. Extensions are disabled in the child to prevent recursive delegation.
+The package adds one `subagent` tool. It starts an isolated, ephemeral Pi process in the current working directory and returns its final response. The child uses the current Pi runtime and inherits the parent's model, thinking level, and project trust decision. Extensions are disabled in the child to prevent recursive delegation.
 
 The default `task` kind handles focused research and investigation. It can require named skills that are available in the parent Pi session; the child loads those skill paths explicitly and is instructed to follow them before starting. Task and review children inherit the parent's model and thinking level unless the tool call explicitly overrides either one. The `review` kind reviews committed branch changes from a required Git base ref. Reviews require a trusted project and clean working tree, run with only Pi's read-only tools and no skills, validate a structured fail-closed verdict, and reject results that become stale before completion.
 
