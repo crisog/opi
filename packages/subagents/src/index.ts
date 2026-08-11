@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -26,6 +27,8 @@ const MAX_REVIEW_LOCATION_LENGTH = 500;
 const MAX_REVIEW_CLAIM_LENGTH = 1_000;
 const MAX_SKILL_NAME_LENGTH = 64;
 const SKILL_NAME_PATTERN = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
+const TASK_DIRECTORY_PREFIX = "opi-subagent-task-";
+const TASK_PROMPT_FILE_NAME = "task.md";
 
 const REVIEW_FINDING_SCHEMA = Type.Object(
   {
@@ -116,6 +119,11 @@ type ChildModel = {
   id: string;
 };
 
+type PiInvocation = {
+  command: string;
+  args: string[];
+};
+
 type ChildSkill = {
   name: string;
   path: string;
@@ -167,6 +175,17 @@ type ReviewExecutionParams = {
   signal?: AbortSignal;
 };
 
+type TaskExecutionParams = {
+  pi: ExtensionAPI;
+  cwd: string;
+  isProjectTrusted: boolean;
+  task: string;
+  model?: string;
+  thinkingLevel?: string;
+  skills?: ChildSkill[];
+  signal?: AbortSignal;
+};
+
 export function buildChildArgs({
   isProjectTrusted,
   model,
@@ -175,7 +194,7 @@ export function buildChildArgs({
   task
 }: BuildChildArgsParams): string[] {
   const args = ["--mode", "json", "--print", "--no-session", "--no-extensions"];
-  if (isProjectTrusted) args.push("--approve");
+  args.push(isProjectTrusted ? "--approve" : "--no-approve");
   for (const skill of skills) args.push("--skill", skill.path);
   if (skills.length > 0) args.push("--append-system-prompt", buildRequiredSkillsPrompt(skills));
   appendModelArgs({ args, model, thinkingLevel });
@@ -239,6 +258,20 @@ function appendModelArgs({ args, model, thinkingLevel }: AppendModelArgsParams):
 function formatChildModel(model: ChildModel | undefined): string | undefined {
   if (!model) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+function getPiInvocation(): PiInvocation {
+  const currentScript = process.argv[1];
+  if (currentScript && existsSync(currentScript)) {
+    return { command: process.execPath, args: [currentScript] };
+  }
+
+  const executableName = basename(process.execPath).toLowerCase();
+  if (!/^(?:node|bun)(?:\.exe)?$/u.test(executableName)) {
+    return { command: process.execPath, args: [] };
+  }
+
+  return { command: "pi", args: [] };
 }
 
 function isJsonObject(value: unknown): value is JsonObject {
@@ -439,7 +472,9 @@ export async function executeReview({
   try {
     await Promise.all([writeFile(patchPath, patch, "utf8"), writeFile(briefPath, brief, "utf8")]);
     const task = buildReviewPrompt({ patchPath, briefPath, baseSha, headSha });
-    const child = await pi.exec("pi", buildReviewChildArgs({ model, thinkingLevel, task }), {
+    const invocation = getPiInvocation();
+    const childArgs = [...invocation.args, ...buildReviewChildArgs({ model, thinkingLevel, task })];
+    const child = await pi.exec(invocation.command, childArgs, {
       cwd: rootPath,
       signal
     });
@@ -498,6 +533,51 @@ async function formatOutput(output: string): Promise<FormattedOutput> {
   };
 }
 
+export async function executeTask({
+  pi,
+  cwd,
+  isProjectTrusted,
+  task,
+  model,
+  thinkingLevel,
+  skills = [],
+  signal
+}: TaskExecutionParams): Promise<FormattedOutput> {
+  const directory = await mkdtemp(join(tmpdir(), TASK_DIRECTORY_PREFIX));
+  const promptPath = join(directory, TASK_PROMPT_FILE_NAME);
+
+  try {
+    await writeFile(promptPath, task, { encoding: "utf8", mode: 0o600 });
+    const args = buildChildArgs({
+      isProjectTrusted,
+      model,
+      thinkingLevel,
+      skills,
+      task: `@${promptPath}`
+    });
+    const invocation = getPiInvocation();
+    const child = await pi.exec(invocation.command, [...invocation.args, ...args], {
+      cwd,
+      signal
+    });
+    if (child.killed) throw new Error("Subagent was cancelled.");
+
+    const response = parseChildResponse(child.stdout);
+    if (child.code !== 0) {
+      const reason = response.errorMessage || child.stderr.trim() || `Pi exited with code ${child.code}.`;
+      throw new Error(`Subagent failed: ${reason}`);
+    }
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      throw new Error(`Subagent ${response.stopReason}: ${response.errorMessage ?? "No error details returned."}`);
+    }
+    if (!response.text) throw new Error("Subagent returned no final response.");
+
+    return formatOutput(response.text);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 export default function registerSubagent(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "subagent",
@@ -553,30 +633,16 @@ export default function registerSubagent(pi: ExtensionAPI): void {
         commands: pi.getCommands(),
         skillNames: params.skills ?? []
       });
-      const args = buildChildArgs({
+      const output = await executeTask({
+        pi,
+        cwd: ctx.cwd,
         isProjectTrusted: ctx.isProjectTrusted(),
         model,
         thinkingLevel,
         skills,
-        task: params.task
-      });
-      const child = await pi.exec("pi", args, {
-        cwd: ctx.cwd,
+        task: params.task,
         signal
       });
-      if (child.killed) throw new Error("Subagent was cancelled.");
-
-      const response = parseChildResponse(child.stdout);
-      if (child.code !== 0) {
-        const reason = response.errorMessage || child.stderr.trim() || `Pi exited with code ${child.code}.`;
-        throw new Error(`Subagent failed: ${reason}`);
-      }
-      if (response.stopReason === "error" || response.stopReason === "aborted") {
-        throw new Error(`Subagent ${response.stopReason}: ${response.errorMessage ?? "No error details returned."}`);
-      }
-      if (!response.text) throw new Error("Subagent returned no final response.");
-
-      const output = await formatOutput(response.text);
       return {
         content: [{ type: "text", text: output.text }],
         details: {

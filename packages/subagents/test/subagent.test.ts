@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,7 @@ import {
   buildChildArgs,
   buildReviewChildArgs,
   executeReview,
+  executeTask,
   formatReviewResult,
   parseChildResponse,
   parseReviewResult,
@@ -35,6 +36,23 @@ test("builds an isolated child invocation with the selected model and thinking l
     "--thinking",
     "high",
     "Review the diff"
+  ]);
+});
+
+test("denies project-local resources when the parent project is untrusted", () => {
+  const args = buildChildArgs({
+    isProjectTrusted: false,
+    task: "Inspect the repository"
+  });
+
+  assert.deepEqual(args, [
+    "--mode",
+    "json",
+    "--print",
+    "--no-session",
+    "--no-extensions",
+    "--no-approve",
+    "Inspect the repository"
   ]);
 });
 
@@ -204,6 +222,53 @@ test("rejects a review when the worktree changes during inspection", async () =>
   } finally {
     await rm(rootPath, { recursive: true, force: true });
   }
+});
+
+test("runs a task from a protected temporary prompt using the current Pi runtime", async () => {
+  let promptPath: string | undefined;
+  const currentScript = process.argv[1];
+  assert.ok(currentScript);
+
+  const pi = {
+    async exec(command: string, args: string[]) {
+      assert.equal(command, process.execPath);
+      assert.equal(args[0], currentScript);
+      assert.ok(args.includes("--no-approve"));
+
+      const promptArgument = args.at(-1);
+      if (!promptArgument?.startsWith("@")) assert.fail("Expected a task file argument.");
+      promptPath = promptArgument.slice(1);
+      assert.equal(await readFile(promptPath, "utf8"), "Inspect authentication boundaries.");
+
+      const promptInfo = await stat(promptPath);
+      assert.equal(promptInfo.mode & 0o077, 0);
+
+      return {
+        stdout: JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Authentication uses scoped credentials." }],
+            stopReason: "stop"
+          }
+        }),
+        stderr: "",
+        code: 0,
+        killed: false
+      };
+    }
+  } as unknown as ExtensionAPI;
+
+  const result = await executeTask({
+    pi,
+    cwd: "/project",
+    isProjectTrusted: false,
+    task: "Inspect authentication boundaries."
+  });
+
+  assert.equal(result.text, "Authentication uses scoped credentials.");
+  if (!promptPath) assert.fail("Expected the child prompt path to be captured.");
+  await assert.rejects(access(promptPath), { code: "ENOENT" });
 });
 
 test("returns the final assistant response from Pi JSON output", () => {
