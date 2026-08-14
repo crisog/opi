@@ -8,9 +8,12 @@ import { buildScheduledPiArgs } from "../src/index.ts";
 import { renderLaunchdPlist } from "../src/launchd.ts";
 import {
   createTaskState,
+  formatSchedule,
   getSchedulerKind,
   listScheduledTasks,
+  parseSchedule,
   type PiInvocation,
+  type Schedule,
   type ScheduledTask
 } from "../src/scheduler.ts";
 import { getSystemdUnitPaths, installSystemdTask, renderSystemdService, renderSystemdTimer } from "../src/systemd.ts";
@@ -19,6 +22,7 @@ const TASK: ScheduledTask = {
   id: "weekday-check",
   scheduler: "launchd",
   schedule: {
+    kind: "calendar",
     hour: 9,
     minute: 5,
     weekdays: [1, 5, 7]
@@ -219,4 +223,58 @@ test("persists and lists a scheduled task", async () => {
 
 test("rejects operating systems without a supported native scheduler", () => {
   assert.throws(() => getSchedulerKind("win32"), /opi-scheduler is unsupported on win32/);
+});
+
+test("parses an interval schedule", () => {
+  const schedule = parseSchedule({ intervalSeconds: 60 });
+  assert.deepEqual(schedule, { kind: "interval", intervalSeconds: 60 });
+});
+
+test("parses a calendar schedule", () => {
+  const schedule = parseSchedule({ hour: 9, minute: 5 });
+  assert.deepEqual(schedule, { kind: "calendar", hour: 9, minute: 5 });
+});
+
+test("parses a calendar schedule with weekdays", () => {
+  const schedule = parseSchedule({ hour: 9, minute: 5, weekdays: [1, 5] });
+  assert.deepEqual(schedule, { kind: "calendar", hour: 9, minute: 5, weekdays: [1, 5] });
+});
+
+test("rejects a schedule with both interval and calendar", () => {
+  assert.throws(() => parseSchedule({ intervalSeconds: 60, hour: 9, minute: 5 }), /cannot have both/);
+});
+
+test("rejects an empty schedule", () => {
+  assert.throws(() => parseSchedule({}), /must have either/);
+});
+
+test("formats an interval schedule in seconds", () => {
+  const schedule: Schedule = { kind: "interval", intervalSeconds: 30 };
+  assert.equal(formatSchedule(schedule), "every 30s");
+});
+
+test("formats an interval schedule in minutes", () => {
+  const schedule: Schedule = { kind: "interval", intervalSeconds: 300 };
+  assert.equal(formatSchedule(schedule), "every 5min");
+});
+
+test("renders StartInterval in a launchd property list", () => {
+  const task: ScheduledTask = {
+    ...TASK,
+    schedule: { kind: "interval", intervalSeconds: 60 }
+  };
+  const plist = renderLaunchdPlist({ task, invocation: INVOCATION });
+  assert.match(plist, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/u);
+  assert.doesNotMatch(plist, /StartCalendarInterval/u);
+});
+
+test("renders OnUnitActiveSec in a systemd timer with no Persistent", () => {
+  const timer = renderSystemdTimer({
+    ...TASK,
+    scheduler: "systemd",
+    schedule: { kind: "interval", intervalSeconds: 120 }
+  });
+  assert.match(timer, /OnUnitActiveSec=120s/u);
+  assert.doesNotMatch(timer, /OnCalendar=/u);
+  assert.doesNotMatch(timer, /Persistent=true/u);
 });

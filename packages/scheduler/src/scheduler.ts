@@ -9,6 +9,8 @@ export const DEFAULT_TOOL_NAMES = ["read", "grep", "find", "ls", "bash"] as cons
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 
+const SECONDS_PER_MINUTE = 60;
+
 const SCHEDULER_KINDS = ["launchd", "systemd"] as const;
 
 const SCHEDULER_KIND_SCHEMA = Type.Unsafe<(typeof SCHEDULER_KINDS)[number]>({
@@ -33,6 +35,17 @@ const WEEKDAY_SCHEMA = Type.Unsafe<(typeof WEEKDAYS)[number]>({
 
 export const SCHEDULE_SCHEMA = Type.Object(
   {
+    hour: Type.Optional(Type.Integer({ minimum: 0, maximum: 23 })),
+    minute: Type.Optional(Type.Integer({ minimum: 0, maximum: 59 })),
+    weekdays: Type.Optional(Type.Array(WEEKDAY_SCHEMA, { minItems: 1, uniqueItems: true })),
+    intervalSeconds: Type.Optional(Type.Integer({ minimum: 1 }))
+  },
+  { additionalProperties: false }
+);
+
+const CALENDAR_SCHEDULE_SCHEMA = Type.Object(
+  {
+    kind: Type.Literal("calendar"),
     hour: Type.Integer({ minimum: 0, maximum: 23 }),
     minute: Type.Integer({ minimum: 0, maximum: 59 }),
     weekdays: Type.Optional(Type.Array(WEEKDAY_SCHEMA, { minItems: 1, uniqueItems: true }))
@@ -40,11 +53,21 @@ export const SCHEDULE_SCHEMA = Type.Object(
   { additionalProperties: false }
 );
 
+const INTERVAL_SCHEDULE_SCHEMA = Type.Object(
+  {
+    kind: Type.Literal("interval"),
+    intervalSeconds: Type.Integer({ minimum: 1 })
+  },
+  { additionalProperties: false }
+);
+
+const STORED_SCHEDULE_SCHEMA = Type.Union([CALENDAR_SCHEDULE_SCHEMA, INTERVAL_SCHEDULE_SCHEMA]);
+
 const SCHEDULED_TASK_SCHEMA = Type.Object(
   {
     id: Type.String({ minLength: 1 }),
     scheduler: SCHEDULER_KIND_SCHEMA,
-    schedule: SCHEDULE_SCHEMA,
+    schedule: STORED_SCHEDULE_SCHEMA,
     workingDirectory: Type.String({ minLength: 1 }),
     tools: Type.Array(BUILTIN_TOOL_NAME_SCHEMA, { minItems: 1, uniqueItems: true }),
     skills: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
@@ -61,7 +84,10 @@ const SCHEDULED_TASK_SCHEMA = Type.Object(
 const validateScheduledTask = Compile(SCHEDULED_TASK_SCHEMA);
 
 export type SchedulerKind = Static<typeof SCHEDULER_KIND_SCHEMA>;
-export type Schedule = Static<typeof SCHEDULE_SCHEMA>;
+export type ScheduleInput = Static<typeof SCHEDULE_SCHEMA>;
+export type CalendarSchedule = Static<typeof CALENDAR_SCHEDULE_SCHEMA>;
+export type IntervalSchedule = Static<typeof INTERVAL_SCHEDULE_SCHEMA>;
+export type Schedule = CalendarSchedule | IntervalSchedule;
 export type BuiltinToolName = Static<typeof BUILTIN_TOOL_NAME_SCHEMA>;
 export type ThinkingLevel = Static<typeof THINKING_LEVEL_SCHEMA>;
 export type Weekday = Static<typeof WEEKDAY_SCHEMA>;
@@ -185,10 +211,41 @@ export async function listScheduledTasks(schedulerRoot: string): Promise<Schedul
   return tasks;
 }
 
+export function parseSchedule(raw: ScheduleInput): Schedule {
+  if (raw.intervalSeconds !== undefined) {
+    if (raw.hour !== undefined || raw.minute !== undefined || raw.weekdays !== undefined) {
+      throw new Error("schedule cannot have both intervalSeconds and hour/minute/weekdays");
+    }
+    return { kind: "interval", intervalSeconds: raw.intervalSeconds };
+  }
+  if (raw.hour !== undefined && raw.minute !== undefined) {
+    if (raw.weekdays !== undefined) {
+      return { kind: "calendar", hour: raw.hour, minute: raw.minute, weekdays: raw.weekdays };
+    }
+    return { kind: "calendar", hour: raw.hour, minute: raw.minute };
+  }
+  throw new Error("schedule must have either intervalSeconds or hour+minute");
+}
+
 export function formatSchedule(schedule: Schedule): string {
-  const time = `${schedule.hour.toString().padStart(2, "0")}:${schedule.minute.toString().padStart(2, "0")}`;
-  if (!schedule.weekdays) return `daily at ${time}`;
-  return `${schedule.weekdays.join(",")} at ${time}`;
+  if (schedule.kind === "interval") {
+    return formatIntervalSchedule(schedule.intervalSeconds);
+  }
+  return formatCalendarSchedule(schedule.hour, schedule.minute, schedule.weekdays);
+}
+
+function formatIntervalSchedule(intervalSeconds: number): string {
+  if (intervalSeconds < SECONDS_PER_MINUTE) return `every ${intervalSeconds}s`;
+  const minutes = Math.floor(intervalSeconds / SECONDS_PER_MINUTE);
+  const seconds = intervalSeconds % SECONDS_PER_MINUTE;
+  if (seconds === 0) return `every ${minutes}min`;
+  return `every ${minutes}min ${seconds}s`;
+}
+
+function formatCalendarSchedule(hour: number, minute: number, weekdays: number[] | undefined): string {
+  const time = `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+  if (!weekdays) return `daily at ${time}`;
+  return `${weekdays.join(",")} at ${time}`;
 }
 
 export function formatCommandFailure(result: CommandResult): string {
