@@ -32,6 +32,7 @@ Guidance for coding agents working in this repository.
 - Declare named constants at the top of the file in `UPPER_SNAKE_CASE`.
 - Replace unexplained numeric limits with named constants and use separators in numeric literals greater than or equal to `1_000`.
 - Prefer straightforward loops and conditionals over dense chains or nested ternaries.
+- Use a discriminated union with a `kind` field for mutually exclusive variants instead of scattering type guard functions across modules. Parse the flat input into the union once at the boundary so every downstream consumer sees a narrowed, safe type.
 - Use `undefined` for optional values and `null` only for a known absence.
 - Use kebab-case file names and named exports, except where Pi requires a default extension factory.
 
@@ -45,6 +46,7 @@ Guidance for coding agents working in this repository.
 - Do not create pass-through wrappers, single-constant modules, or abstractions for hypothetical consumers.
 - Keep a short operation inline when extracting it would make the signature larger than the implementation.
 - Extract a helper only when it gives a concept a useful name, removes real duplication, or isolates a boundary.
+- Prefer one parse step at the boundary over repeated validation calls throughout the code. Parsing produces a trusted value the rest of the system can use directly; validation checks a condition and then throws away the proof.
 - Match existing Pi APIs directly. Do not imitate another agent platform when Pi has a native convention.
 
 ## Comments and documentation

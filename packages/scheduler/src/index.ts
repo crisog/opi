@@ -24,11 +24,13 @@ import {
   formatSchedule,
   getSchedulerKind,
   listScheduledTasks,
+  parseSchedule,
   readScheduledTask,
   type BuiltinToolName,
   type ExecuteCommand,
   type PiInvocation,
   type Schedule,
+  type ScheduleInput,
   type ScheduledTask,
   type ThinkingLevel
 } from "./scheduler.ts";
@@ -444,9 +446,9 @@ function requireValue({ value, name, action }: RequireValueParams): string {
   return value;
 }
 
-function requireSchedule(schedule: Schedule | undefined): Schedule {
-  if (!schedule) throw new Error("scheduler action=create requires schedule.");
-  return schedule;
+function requireSchedule(raw: ScheduleInput | undefined): Schedule {
+  if (!raw) throw new Error("scheduler action=create requires schedule.");
+  return parseSchedule(raw);
 }
 
 function getSystemdUserUnitDirectory(): string {

@@ -1,7 +1,14 @@
 import { existsSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { formatCommandFailure, type ExecuteCommand, type PiInvocation, type ScheduledTask } from "./scheduler.ts";
+import {
+  formatCommandFailure,
+  type CalendarSchedule,
+  type ExecuteCommand,
+  type IntervalSchedule,
+  type PiInvocation,
+  type ScheduledTask
+} from "./scheduler.ts";
 
 const LAUNCHD_LABEL_PREFIX = "com.opi.scheduler";
 
@@ -39,7 +46,12 @@ export function renderLaunchdPlist({ task, invocation }: RenderLaunchdPlistParam
   const programArguments = [invocation.command, ...invocation.args]
     .map((argument) => `      <string>${escapeXml(argument)}</string>`)
     .join("\n");
-  const calendar = renderCalendarInterval(task);
+  let schedule: string;
+  if (task.schedule.kind === "interval") {
+    schedule = renderStartInterval(task.schedule);
+  } else {
+    schedule = renderCalendarInterval(task.schedule);
+  }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -60,8 +72,7 @@ ${programArguments}
     <key>PI_CODING_AGENT_DIR</key>
     <string>${escapeXml(invocation.environment.PI_CODING_AGENT_DIR)}</string>
   </dict>
-  <key>StartCalendarInterval</key>
-${calendar}
+  ${schedule}
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
@@ -121,26 +132,26 @@ export async function removeLaunchdTask({
   await rm(getLaunchdPlistPath({ launchAgentsDirectory, id }), { force: true });
 }
 
-function renderCalendarInterval(task: ScheduledTask): string {
-  const weekdays = task.schedule.weekdays;
-  if (!weekdays) return `  <dict>\n${renderCalendarFields({ task })}\n  </dict>`;
+function renderCalendarInterval(schedule: CalendarSchedule): string {
+  if (!schedule.weekdays) {
+    return `  <dict>\n${renderCalendarFields(schedule)}\n  </dict>`;
+  }
 
-  const entries = weekdays
+  const entries = schedule.weekdays
     .map(
       (weekday) =>
-        `    <dict>\n      <key>Weekday</key>\n      <integer>${weekday}</integer>\n${renderCalendarFields({ task, indentation: "      " })}\n    </dict>`
+        `    <dict>\n      <key>Weekday</key>\n      <integer>${weekday}</integer>\n${renderCalendarFields(schedule, "      ")}\n    </dict>`
     )
     .join("\n");
   return `  <array>\n${entries}\n  </array>`;
 }
 
-type RenderCalendarFieldsParams = {
-  task: ScheduledTask;
-  indentation?: string;
-};
+function renderCalendarFields(schedule: CalendarSchedule, indentation = "    "): string {
+  return `${indentation}<key>Hour</key>\n${indentation}<integer>${schedule.hour}</integer>\n${indentation}<key>Minute</key>\n${indentation}<integer>${schedule.minute}</integer>`;
+}
 
-function renderCalendarFields({ task, indentation = "    " }: RenderCalendarFieldsParams): string {
-  return `${indentation}<key>Hour</key>\n${indentation}<integer>${task.schedule.hour}</integer>\n${indentation}<key>Minute</key>\n${indentation}<integer>${task.schedule.minute}</integer>`;
+function renderStartInterval(schedule: IntervalSchedule): string {
+  return `<key>StartInterval</key>\n  <integer>${schedule.intervalSeconds}</integer>`;
 }
 
 function escapeXml(value: string): string {

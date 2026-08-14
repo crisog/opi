@@ -3,9 +3,9 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   formatCommandFailure,
+  type CalendarSchedule,
   type ExecuteCommand,
   type PiInvocation,
-  type Schedule,
   type ScheduledTask,
   type Weekday
 } from "./scheduler.ts";
@@ -75,16 +75,23 @@ StandardError=append:${escapeSystemdSetting(task.stderrPath)}
 
 export function renderSystemdTimer(task: ScheduledTask): string {
   const unitName = getSystemdUnitName(task.id);
-  const calendarLines = buildOnCalendarValues(task.schedule)
-    .map((value) => `OnCalendar=${value}`)
-    .join("\n");
+  let timerLines: string;
+  let persistent: string;
+  if (task.schedule.kind === "interval") {
+    timerLines = `OnUnitActiveSec=${task.schedule.intervalSeconds}s`;
+    persistent = "";
+  } else {
+    timerLines = buildOnCalendarValues(task.schedule)
+      .map((value) => `OnCalendar=${value}`)
+      .join("\n");
+    persistent = "Persistent=true\n";
+  }
   return `[Unit]
 Description=Schedule Pi task ${escapeUnitText(task.id)}
 
 [Timer]
-${calendarLines}
-Persistent=true
-Unit=${unitName}.service
+${timerLines}
+${persistent}Unit=${unitName}.service
 
 [Install]
 WantedBy=timers.target
@@ -160,13 +167,16 @@ export async function removeSystemdTask({
   }
 }
 
-function buildOnCalendarValues(schedule: Schedule): string[] {
+function buildOnCalendarValues(schedule: CalendarSchedule): string[] {
   const time = `${schedule.hour.toString().padStart(2, "0")}:${schedule.minute.toString().padStart(2, "0")}:00`;
   if (!schedule.weekdays) return [`*-*-* ${time}`];
 
   const values: string[] = [];
   for (const weekday of schedule.weekdays) {
-    values.push(`${WEEKDAY_NAMES[weekday]} *-*-* ${time}`);
+    const name = WEEKDAY_NAMES[weekday];
+    if (name) {
+      values.push(`${name} *-*-* ${time}`);
+    }
   }
   return values;
 }
