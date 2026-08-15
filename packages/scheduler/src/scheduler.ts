@@ -73,6 +73,7 @@ const SCHEDULED_TASK_SCHEMA = Type.Object(
     skills: Type.Array(Type.String({ minLength: 1 }), { uniqueItems: true }),
     model: Type.Optional(Type.String({ minLength: 1 })),
     thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA),
+    notify: Type.Optional(Type.Boolean()),
     createdAt: Type.String({ minLength: 1 }),
     instructionsPath: Type.String({ minLength: 1 }),
     stdoutPath: Type.String({ minLength: 1 }),

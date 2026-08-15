@@ -101,7 +101,12 @@ const SCHEDULER_PARAMS = Type.Object(
         description: "Pi model pattern or provider/model ID; defaults to the current model"
       })
     ),
-    thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA)
+    thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA),
+    notify: Type.Optional(
+      Type.Boolean({
+        description: "Fire a desktop notification when the scheduled task completes"
+      })
+    )
   },
   { additionalProperties: false }
 );
@@ -150,6 +155,7 @@ type CreateScheduledTaskParams = {
   skills: RequiredSkill[];
   model?: string;
   thinkingLevel?: ThinkingLevel;
+  notify: boolean;
   workingDirectory: string;
   isProjectTrusted: boolean;
 };
@@ -262,6 +268,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
         action: params.action
       });
       const schedule = requireSchedule(params.schedule);
+      const notify = params.notify ?? false;
       const skills = resolveRequiredSkills({ commands: pi.getCommands(), names: params.skills ?? [] });
       const tools = params.tools ? [...params.tools] : [...DEFAULT_TOOL_NAMES];
       const model = params.model ?? formatChildModel(ctx.model);
@@ -282,6 +289,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
         skills,
         model,
         thinkingLevel,
+        notify,
         workingDirectory: ctx.cwd,
         isProjectTrusted: ctx.isProjectTrusted()
       });
@@ -305,6 +313,7 @@ async function createScheduledTask({
   model,
   thinkingLevel,
   workingDirectory,
+  notify,
   isProjectTrusted
 }: CreateScheduledTaskParams): Promise<ScheduledTask> {
   const paths = buildTaskPaths({ schedulerRoot, id });
@@ -317,6 +326,7 @@ async function createScheduledTask({
     skills: skills.map((skill) => skill.name),
     model,
     thinkingLevel,
+    notify,
     createdAt: new Date().toISOString(),
     instructionsPath: paths.instructions,
     stdoutPath: paths.stdout,
@@ -341,6 +351,7 @@ async function createScheduledTask({
       await installLaunchdTask({
         task,
         invocation,
+        notify,
         executeCommand,
         launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
         userId: nativeScheduler.userId
@@ -349,6 +360,7 @@ async function createScheduledTask({
       await installSystemdTask({
         task,
         invocation,
+        notify,
         executeCommand,
         userUnitDirectory: getSystemdUserUnitDirectory()
       });
