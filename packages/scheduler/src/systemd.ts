@@ -24,7 +24,7 @@ const WEEKDAY_NAMES: Record<Weekday, string> = {
 type RenderSystemdServiceParams = {
   task: ScheduledTask;
   invocation: PiInvocation;
-  notify: boolean;
+  lastRunPath: string | undefined;
 };
 
 type InstallSystemdTaskParams = RenderSystemdServiceParams & {
@@ -58,10 +58,11 @@ export function getSystemdUnitPaths({
   };
 }
 
-export function renderSystemdService({ task, invocation, notify }: RenderSystemdServiceParams): string {
+export function renderSystemdService({ task, invocation, lastRunPath }: RenderSystemdServiceParams): string {
   let command: string;
-  if (notify) {
-    const shellCommand = buildNotifyShellCommand({ invocation, taskId: task.id });
+  if (lastRunPath !== undefined) {
+    const piCommand = [invocation.command, ...invocation.args].map(quoteShellArg).join(" ");
+    const shellCommand = `${piCommand}; code=$?; echo '{"exitCode":'$code',"timestamp":"'$(date -Iseconds)'"}' > '${lastRunPath}'; exit $code`;
     command = `${quoteSystemdArgument("/bin/bash")} ${quoteSystemdArgument("-c")} ${quoteSystemdArgument(shellCommand)}`;
   } else {
     command = [invocation.command, ...invocation.args].map(quoteSystemdArgument).join(" ");
@@ -108,7 +109,7 @@ WantedBy=timers.target
 export async function installSystemdTask({
   task,
   invocation,
-  notify,
+  lastRunPath,
   executeCommand,
   userUnitDirectory
 }: InstallSystemdTaskParams): Promise<SystemdUnitPaths> {
@@ -117,7 +118,7 @@ export async function installSystemdTask({
   if (existsSync(paths.service) || existsSync(paths.timer)) {
     throw new Error(`systemd task already exists: ${task.id}`);
   }
-  await writeFile(paths.service, renderSystemdService({ task, invocation, notify }), {
+  await writeFile(paths.service, renderSystemdService({ task, invocation, lastRunPath }), {
     encoding: "utf8",
     mode: 0o600,
     flag: "wx"
@@ -237,18 +238,6 @@ function escapeUnitText(value: string): string {
 
 function assertSingleLine(value: string): void {
   if (/[\r\n\0]/u.test(value)) throw new Error("systemd values must not contain control characters.");
-}
-
-type BuildNotifyShellCommandParams = {
-  invocation: PiInvocation;
-  taskId: string;
-};
-
-function buildNotifyShellCommand({ invocation, taskId }: BuildNotifyShellCommandParams): string {
-  const piCommand = [invocation.command, ...invocation.args].map(quoteShellArg).join(" ");
-  const notifySuccess = `notify-send "Pi: ${taskId}" "completed successfully"`;
-  const notifyFailure = `notify-send "Pi: ${taskId}" "failed (exit $code)"`;
-  return `${piCommand}; code=$?; if [ $code -eq 0 ]; then ${notifySuccess}; else ${notifyFailure}; fi; exit $code`;
 }
 
 function quoteShellArg(arg: string): string {

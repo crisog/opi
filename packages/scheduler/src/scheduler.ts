@@ -121,6 +121,7 @@ export type TaskPaths = {
   directory: string;
   metadata: string;
   instructions: string;
+  lastRun: string;
   stdout: string;
   stderr: string;
 };
@@ -148,6 +149,7 @@ export function buildTaskPaths({ schedulerRoot, id }: BuildTaskPathsParams): Tas
     directory,
     metadata: join(directory, "task.json"),
     instructions: join(directory, "instructions.md"),
+    lastRun: join(directory, "last-run.json"),
     stdout: join(directory, "stdout.log"),
     stderr: join(directory, "stderr.log")
   };
@@ -256,4 +258,28 @@ export function formatCommandFailure(result: CommandResult): string {
 
 export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export type LastRun = {
+  exitCode: number;
+  timestamp: string;
+};
+
+export async function readLastRun(stdoutPath: string): Promise<LastRun | null> {
+  const lastRunPath = stdoutPath.replace(/stdout\.log$/, "last-run.json");
+  if (!existsSync(lastRunPath)) return null;
+  try {
+    const raw = await readFile(lastRunPath, "utf8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!isRecord(parsed)) return null;
+    if (typeof parsed["exitCode"] !== "number") return null;
+    if (typeof parsed["timestamp"] !== "string") return null;
+    return { exitCode: parsed["exitCode"], timestamp: parsed["timestamp"] };
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
