@@ -15,7 +15,7 @@ const LAUNCHD_LABEL_PREFIX = "com.opi.scheduler";
 type RenderLaunchdPlistParams = {
   task: ScheduledTask;
   invocation: PiInvocation;
-  notify: boolean;
+  lastRunPath: string | undefined;
 };
 
 type InstallLaunchdTaskParams = RenderLaunchdPlistParams & {
@@ -42,7 +42,7 @@ function getLaunchdPlistPath({
   return join(launchAgentsDirectory, `${getLaunchdLabel(id)}.plist`);
 }
 
-export function renderLaunchdPlist({ task, invocation, notify }: RenderLaunchdPlistParams): string {
+export function renderLaunchdPlist({ task, invocation, lastRunPath }: RenderLaunchdPlistParams): string {
   const label = getLaunchdLabel(task.id);
   let schedule: string;
   if (task.schedule.kind === "interval") {
@@ -52,11 +52,8 @@ export function renderLaunchdPlist({ task, invocation, notify }: RenderLaunchdPl
   }
 
   let programArguments: string;
-  if (notify) {
-    const shellCommand = buildShellCommand({ invocation, taskId: task.id });
-    programArguments = `      <string>/bin/bash</string>
-      <string>-c</string>
-      <string>${escapeXml(shellCommand)}</string>`;
+  if (lastRunPath !== undefined) {
+    programArguments = renderNotifyWrapper({ invocation, lastRunPath });
   } else {
     programArguments = [invocation.command, ...invocation.args]
       .map((argument) => `      <string>${escapeXml(argument)}</string>`)
@@ -97,7 +94,7 @@ ${programArguments}
 export async function installLaunchdTask({
   task,
   invocation,
-  notify,
+  lastRunPath,
   executeCommand,
   launchAgentsDirectory,
   userId
@@ -105,7 +102,7 @@ export async function installLaunchdTask({
   await mkdir(launchAgentsDirectory, { recursive: true });
   const plistPath = getLaunchdPlistPath({ launchAgentsDirectory, id: task.id });
   if (existsSync(plistPath)) throw new Error(`launchd task already exists: ${task.id}`);
-  await writeFile(plistPath, renderLaunchdPlist({ task, invocation, notify }), {
+  await writeFile(plistPath, renderLaunchdPlist({ task, invocation, lastRunPath }), {
     encoding: "utf8",
     mode: 0o600,
     flag: "wx"
@@ -178,20 +175,17 @@ function isMissingService(result: { stdout: string; stderr: string }): boolean {
   return /could not find service|service not found/u.test(`${result.stdout}\n${result.stderr}`.toLowerCase());
 }
 
-type BuildShellCommandParams = {
+type RenderNotifyWrapperParams = {
   invocation: PiInvocation;
-  taskId: string;
+  lastRunPath: string;
 };
 
-function buildShellCommand({ invocation, taskId }: BuildShellCommandParams): string {
+function renderNotifyWrapper({ invocation, lastRunPath }: RenderNotifyWrapperParams): string {
   const piCommand = buildShellSafeCommand(invocation.command, invocation.args);
-  const notifySuccess = osascriptNotify({ taskId, message: "completed successfully" });
-  const notifyFailure = osascriptNotify({ taskId, message: "failed (exit $code)" });
-  return `${piCommand}; code=$?; if [ $code -eq 0 ]; then ${notifySuccess}; else ${notifyFailure}; fi; exit $code`;
-}
-
-function osascriptNotify({ taskId, message }: { taskId: string; message: string }): string {
-  return `osascript -e "display notification \\"${message}\\" with title \\"Pi: ${taskId}\\""`;
+  const shellCommand = `${piCommand}; code=$?; echo '{"exitCode":'$code',"timestamp":"'$(date -Iseconds)'"}' > '${lastRunPath}'; exit $code`;
+  return `      <string>/bin/bash</string>
+      <string>-c</string>
+      <string>${escapeXml(shellCommand)}</string>`;
 }
 
 function buildShellSafeCommand(command: string, args: string[]): string {

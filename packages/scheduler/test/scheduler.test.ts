@@ -79,7 +79,7 @@ test("builds an isolated scheduled Pi invocation with explicit capabilities", ()
 });
 
 test("renders every selected weekday in a launchd schedule", () => {
-  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, notify: false });
+  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, lastRunPath: undefined });
 
   assert.match(
     plist,
@@ -88,19 +88,19 @@ test("renders every selected weekday in a launchd schedule", () => {
 });
 
 test("escapes paths embedded in a launchd property list", () => {
-  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, notify: false });
+  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, lastRunPath: undefined });
 
   assert.match(plist, /<string>\/Users\/example\/Code &amp; Notes\/project<\/string>/u);
 });
 
 test("preserves PATH for scheduled launchd checks", () => {
-  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, notify: false });
+  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, lastRunPath: undefined });
 
   assert.match(plist, /<key>PATH<\/key>\s*<string>\/opt\/homebrew\/bin:\/usr\/bin:\/bin<\/string>/u);
 });
 
 test("preserves the Pi config directory for scheduled launchd checks", () => {
-  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, notify: false });
+  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, lastRunPath: undefined });
 
   assert.match(plist, /<key>PI_CODING_AGENT_DIR<\/key>\s*<string>\/Users\/example\/\.pi\/agent<\/string>/u);
 });
@@ -124,7 +124,7 @@ test("renders the Pi invocation in a systemd service", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd" },
     invocation: INVOCATION,
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(service, /ExecStart="\/usr\/local\/bin\/node" "\/usr\/local\/lib\/pi\/cli\.js" "--print"/u);
@@ -134,7 +134,7 @@ test("escapes systemd working-directory paths without quoting them", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd", workingDirectory: "/tmp/project notes" },
     invocation: INVOCATION,
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(service, /WorkingDirectory=\/tmp\/project\\x20notes/u);
@@ -144,7 +144,7 @@ test("routes systemd task output to its persistent logs", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd" },
     invocation: INVOCATION,
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(service, /StandardOutput=append:.*\/stdout\.log[\s\S]*StandardError=append:.*\/stderr\.log/u);
@@ -154,7 +154,7 @@ test("preserves PATH for scheduled systemd checks", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd" },
     invocation: INVOCATION,
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(service, /Environment="PATH=\/opt\/homebrew\/bin:\/usr\/bin:\/bin"/u);
@@ -168,7 +168,7 @@ test("escapes systemd command dollars without changing environment values", () =
       command: "/Users/$USER/bin/node",
       environment: { ...INVOCATION.environment, PATH: "/Users/$USER/bin:/usr/bin" }
     },
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(
@@ -181,7 +181,7 @@ test("preserves the Pi config directory for scheduled systemd checks", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd" },
     invocation: INVOCATION,
-    notify: false
+    lastRunPath: undefined
   });
 
   assert.match(service, /Environment="PI_CODING_AGENT_DIR=\/Users\/example\/\.pi\/agent"/u);
@@ -196,7 +196,7 @@ test("cleans systemd unit files when enabling a timer fails", async () => {
       await installSystemdTask({
         task: { ...TASK, scheduler: "systemd" },
         invocation: INVOCATION,
-        notify: false,
+        lastRunPath: undefined,
         userUnitDirectory,
         async executeCommand() {
           commandIndex += 1;
@@ -282,7 +282,7 @@ test("renders StartInterval in a launchd property list", () => {
     ...TASK,
     schedule: { kind: "interval", intervalSeconds: 60 }
   };
-  const plist = renderLaunchdPlist({ task, invocation: INVOCATION, notify: false });
+  const plist = renderLaunchdPlist({ task, invocation: INVOCATION, lastRunPath: undefined });
   assert.match(plist, /<key>StartInterval<\/key>\s*<integer>60<\/integer>/u);
   assert.doesNotMatch(plist, /StartCalendarInterval/u);
 });
@@ -298,21 +298,21 @@ test("renders OnUnitActiveSec in a systemd timer with no Persistent", () => {
   assert.doesNotMatch(timer, /Persistent=true/u);
 });
 
-test("wraps launchd command in notification shell when notify is enabled", () => {
-  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, notify: true });
+test("wraps launchd command in notification shell when lastRunPath is set", () => {
+  const plist = renderLaunchdPlist({ task: TASK, invocation: INVOCATION, lastRunPath: "/tmp/last-run.json" });
   assert.match(plist, /<string>\/bin\/bash<\/string>/u);
   assert.match(plist, /<string>-c<\/string>/u);
-  assert.match(plist, /osascript -e/u);
-  assert.match(plist, /completed successfully/u);
+  assert.match(plist, /last-run\.json/u);
+  assert.match(plist, /date -Iseconds/u);
 });
 
-test("wraps systemd command in notification shell when notify is enabled", () => {
+test("wraps systemd command in notification shell when lastRunPath is set", () => {
   const service = renderSystemdService({
     task: { ...TASK, scheduler: "systemd" },
     invocation: INVOCATION,
-    notify: true
+    lastRunPath: "/tmp/last-run.json"
   });
   assert.match(service, /ExecStart="\/bin\/bash" "-c"/u);
-  assert.match(service, /notify-send/u);
-  assert.match(service, /completed successfully/u);
+  assert.match(service, /last-run\.json/u);
+  assert.match(service, /date -Iseconds/u);
 });

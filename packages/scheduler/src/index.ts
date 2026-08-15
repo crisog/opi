@@ -25,9 +25,11 @@ import {
   getSchedulerKind,
   listScheduledTasks,
   parseSchedule,
+  readLastRun,
   readScheduledTask,
   type BuiltinToolName,
   type ExecuteCommand,
+  type LastRun,
   type PiInvocation,
   type Schedule,
   type ScheduleInput,
@@ -245,7 +247,18 @@ export default function registerScheduler(pi: ExtensionAPI): void {
 
       if (params.action === "list") {
         const tasks = await listScheduledTasks(join(getAgentDir(), "scheduler"));
-        const text = tasks.length === 0 ? "No scheduled tasks." : tasks.map(formatScheduledTask).join("\n\n");
+        if (tasks.length === 0) {
+          return {
+            content: [{ type: "text", text: "No scheduled tasks." }],
+            details: { action: params.action, count: 0 }
+          };
+        }
+        const formatted = [];
+        for (const task of tasks) {
+          const lastRun = await readLastRun(task.stdoutPath);
+          formatted.push(formatScheduledTask(task, lastRun));
+        }
+        const text = formatted.join("\n\n");
         return {
           content: [{ type: "text", text: await formatOutput(text) }],
           details: { action: params.action, count: tasks.length }
@@ -294,7 +307,7 @@ export default function registerScheduler(pi: ExtensionAPI): void {
         isProjectTrusted: ctx.isProjectTrusted()
       });
       return {
-        content: [{ type: "text", text: `Created scheduled task: ${task.id}\n${formatScheduledTask(task)}` }],
+        content: [{ type: "text", text: `Created scheduled task: ${task.id}\n${formatScheduledTask(task, null)}` }],
         details: { action: params.action, id, status: "created" }
       };
     }
@@ -346,12 +359,13 @@ async function createScheduledTask({
       tools
     });
     const invocation = getPiInvocation(args);
+    const lastRunPath = notify ? paths.lastRun : undefined;
 
     if (nativeScheduler.kind === "launchd") {
       await installLaunchdTask({
         task,
         invocation,
-        notify,
+        lastRunPath,
         executeCommand,
         launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
         userId: nativeScheduler.userId
@@ -360,7 +374,7 @@ async function createScheduledTask({
       await installSystemdTask({
         task,
         invocation,
-        notify,
+        lastRunPath,
         executeCommand,
         userUnitDirectory: getSystemdUserUnitDirectory()
       });
@@ -484,11 +498,18 @@ function formatChildModel(model: ChildModel | undefined): string | undefined {
   return `${model.provider}/${model.id}`;
 }
 
-function formatScheduledTask(task: ScheduledTask): string {
+function formatScheduledTask(task: ScheduledTask, lastRun: LastRun | null): string {
   const model = task.model ?? "Pi default";
   const thinkingLevel = task.thinkingLevel ?? "Pi default";
   const skills = task.skills.length > 0 ? task.skills.join(", ") : "none";
-  return `${task.id}\nSchedule: ${formatSchedule(task.schedule)}\nDirectory: ${task.workingDirectory}\nModel: ${model}\nThinking: ${thinkingLevel}\nTools: ${task.tools.join(", ")}\nSkills: ${skills}\nOutput: ${task.stdoutPath}\nErrors: ${task.stderrPath}`;
+  const lastRunLine = formatLastRunLine(lastRun);
+  return `${task.id}\nSchedule: ${formatSchedule(task.schedule)}\nDirectory: ${task.workingDirectory}\nModel: ${model}\nThinking: ${thinkingLevel}\nTools: ${task.tools.join(", ")}\nSkills: ${skills}\n${lastRunLine}Output: ${task.stdoutPath}\nErrors: ${task.stderrPath}`;
+}
+
+function formatLastRunLine(lastRun: LastRun | null): string {
+  if (!lastRun) return "Last run: never\n";
+  const status = lastRun.exitCode === 0 ? "success" : `failed (exit ${lastRun.exitCode})`;
+  return `Last run: ${status} at ${lastRun.timestamp}\n`;
 }
 
 async function formatOutput(output: string): Promise<string> {
