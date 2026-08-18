@@ -9,7 +9,7 @@ The package adds two tools:
 
 Both use the current Pi runtime and inherit the parent's model and thinking level unless explicitly overridden. Extensions are disabled in children to prevent recursive delegation. OPI provides execution capabilities only; it does not package workflow skills.
 
-The canonical behavioral contract for both tools is [the subagents specification](../../docs/subagents.spec.md).
+The canonical behavioral contract for both tools is [the subagents specification](./SPEC.md).
 
 The default `task` kind handles focused research and investigation. It can require named skills that are available in the parent Pi session; the child loads those skill paths explicitly and is instructed to follow them before starting. Task and review children inherit the parent's model and thinking level unless the tool call explicitly overrides either one. The `review` kind reviews committed branch changes from a required Git base ref. Reviews require a trusted project and clean working tree, run with only Pi's read-only tools and no skills, validate a structured fail-closed verdict, and reject results that become stale before completion.
 
