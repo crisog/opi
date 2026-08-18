@@ -1,15 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
-import {
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  formatSize,
-  getAgentDir,
-  truncateHead,
-  type ExtensionAPI
-} from "@earendil-works/pi-coding-agent";
+import { fileURLToPath } from "node:url";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { installLaunchdTask, removeLaunchdTask } from "./launchd.ts";
 import {
@@ -17,28 +10,30 @@ import {
   DEFAULT_TOOL_NAMES,
   SCHEDULE_SCHEMA,
   THINKING_LEVELS,
-  buildTaskPaths,
-  createTaskState,
   formatCommandFailure,
   formatError,
-  formatSchedule,
   getSchedulerKind,
-  listScheduledTasks,
   parseSchedule,
-  readLastRun,
-  readScheduledTask,
   type BuiltinToolName,
   type ExecuteCommand,
-  type LastRun,
   type PiInvocation,
   type Schedule,
   type ScheduleInput,
-  type ScheduledTask,
   type ThinkingLevel
 } from "./scheduler.ts";
+import { createSchedulerStore, type SchedulerStore, type StoredSchedulerTask } from "./scheduler-store.ts";
+import {
+  formatSchedulerList,
+  formatSchedulerRemoval,
+  formatSchedulerTaskResult,
+  type SchedulerToolDetails
+} from "./scheduler-output.ts";
+import { renderSchedulerCall, renderSchedulerResult } from "./scheduler-renderer.ts";
 import { installSystemdTask, removeSystemdTask } from "./systemd.ts";
 
-const ACTIONS = ["create", "list", "remove"] as const;
+const ACTIONS = ["create", "list", "status", "remove"] as const;
+const RUNNER_PATH = fileURLToPath(new URL("scheduler-runner.ts", import.meta.url));
+const MAX_LISTED_TASKS = 20;
 const MAX_ID_LENGTH = 64;
 const MAX_INSTRUCTIONS_LENGTH = 20_000;
 const MAX_SKILL_NAME_LENGTH = 64;
@@ -103,12 +98,7 @@ const SCHEDULER_PARAMS = Type.Object(
         description: "Pi model pattern or provider/model ID; defaults to the current model"
       })
     ),
-    thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA),
-    notify: Type.Optional(
-      Type.Boolean({
-        description: "Fire a desktop notification when the scheduled task completes"
-      })
-    )
+    thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA)
   },
   { additionalProperties: false }
 );
@@ -148,7 +138,8 @@ type NativeScheduler =
 
 type CreateScheduledTaskParams = {
   executeCommand: ExecuteCommand;
-  schedulerRoot: string;
+  store: SchedulerStore;
+  agentDirectory: string;
   nativeScheduler: NativeScheduler;
   id: string;
   instructions: string;
@@ -157,15 +148,19 @@ type CreateScheduledTaskParams = {
   skills: RequiredSkill[];
   model?: string;
   thinkingLevel?: ThinkingLevel;
-  notify: boolean;
-  workingDirectory: string;
   isProjectTrusted: boolean;
 };
 
 type RemoveScheduledTaskParams = {
   executeCommand: ExecuteCommand;
-  schedulerRoot: string;
+  store: SchedulerStore;
   nativeScheduler: NativeScheduler;
+  id: string;
+};
+
+type BuildSchedulerRunnerInvocationParams = {
+  agentDirectory: string;
+  workspacePath: string;
   id: string;
 };
 
@@ -178,6 +173,8 @@ export function buildScheduledPiArgs({
   tools
 }: BuildScheduledPiArgsParams): string[] {
   const args = [
+    "--mode",
+    "json",
     "--print",
     "--no-session",
     "--no-extensions",
@@ -217,6 +214,21 @@ export function getPiInvocation(args: string[]): PiInvocation {
   return { command: "pi", args, environment };
 }
 
+export function buildSchedulerRunnerInvocation({
+  agentDirectory,
+  workspacePath,
+  id
+}: BuildSchedulerRunnerInvocationParams): PiInvocation {
+  return {
+    command: process.execPath,
+    args: ["--experimental-strip-types", RUNNER_PATH, agentDirectory, workspacePath, id],
+    environment: {
+      PATH: getScheduledPath(),
+      PI_CODING_AGENT_DIR: agentDirectory
+    }
+  };
+}
+
 export function resolveRequiredSkills({ commands, names }: ResolveRequiredSkillsParams): RequiredSkill[] {
   const skills: RequiredSkill[] = [];
   for (const name of names) {
@@ -228,10 +240,10 @@ export function resolveRequiredSkills({ commands, names }: ResolveRequiredSkills
 }
 
 export default function registerScheduler(pi: ExtensionAPI): void {
-  pi.registerTool({
+  pi.registerTool<typeof SCHEDULER_PARAMS, SchedulerToolDetails>({
     name: "scheduler",
     label: "Scheduler",
-    description: "Create, list, or remove recurring Pi tasks using launchd on macOS or systemd user timers on Linux.",
+    description: "Create, list, inspect, or remove recurring Pi tasks using launchd or systemd user timers.",
     promptSnippet: "Manage recurring native scheduled Pi tasks",
     promptGuidelines: [
       "Use scheduler when the user asks Pi to run recurring unattended checks.",
@@ -240,39 +252,32 @@ export default function registerScheduler(pi: ExtensionAPI): void {
     ],
     parameters: SCHEDULER_PARAMS,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      const agentDirectory = getAgentDir();
+      const store = await createSchedulerStore({ agentDirectory, workspacePath: ctx.cwd });
+
+      if (params.action === "list") {
+        const tasks = (await store.listTasks()).slice(0, MAX_LISTED_TASKS);
+        const entries = [];
+        for (const task of tasks) {
+          entries.push({ task, run: await store.readLatestRun({ id: task.id }) });
+        }
+        return formatSchedulerList(entries);
+      }
+
+      const id = requireValue({ value: params.id, name: "id", action: params.action });
+      if (params.action === "status") {
+        const task = await store.readTask({ id });
+        const run = await store.readLatestRun({ id });
+        return formatSchedulerTaskResult({ action: "status", task, run });
+      }
+
       const nativeScheduler = getNativeScheduler(process.platform);
       const executeCommand: ExecuteCommand = async ({ command, args }) =>
         pi.exec(command, args, { cwd: ctx.cwd, signal });
       await assertSchedulerAvailable({ executeCommand, nativeScheduler, signal });
-
-      if (params.action === "list") {
-        const tasks = await listScheduledTasks(join(getAgentDir(), "scheduler"));
-        if (tasks.length === 0) {
-          return {
-            content: [{ type: "text", text: "No scheduled tasks." }],
-            details: { action: params.action, count: 0 }
-          };
-        }
-        const formatted = [];
-        for (const task of tasks) {
-          const lastRun = await readLastRun(task.stdoutPath);
-          formatted.push(formatScheduledTask(task, lastRun));
-        }
-        const text = formatted.join("\n\n");
-        return {
-          content: [{ type: "text", text: await formatOutput(text) }],
-          details: { action: params.action, count: tasks.length }
-        };
-      }
-
-      const id = requireValue({ value: params.id, name: "id", action: params.action });
-      const schedulerRoot = join(getAgentDir(), "scheduler");
       if (params.action === "remove") {
-        await removeScheduledTask({ executeCommand, schedulerRoot, nativeScheduler, id });
-        return {
-          content: [{ type: "text", text: `Removed scheduled task: ${id}` }],
-          details: { action: params.action, id }
-        };
+        await removeScheduledTask({ executeCommand, store, nativeScheduler, id });
+        return formatSchedulerRemoval(id);
       }
 
       const instructions = requireValue({
@@ -281,7 +286,6 @@ export default function registerScheduler(pi: ExtensionAPI): void {
         action: params.action
       });
       const schedule = requireSchedule(params.schedule);
-      const notify = params.notify ?? false;
       const skills = resolveRequiredSkills({ commands: pi.getCommands(), names: params.skills ?? [] });
       const tools = params.tools ? [...params.tools] : [...DEFAULT_TOOL_NAMES];
       const model = params.model ?? formatChildModel(ctx.model);
@@ -289,11 +293,12 @@ export default function registerScheduler(pi: ExtensionAPI): void {
 
       onUpdate?.({
         content: [{ type: "text", text: `Creating scheduled task ${id}...` }],
-        details: { action: params.action, id, status: "creating" }
+        details: { kind: "progress", action: "create", id }
       });
       const task = await createScheduledTask({
         executeCommand,
-        schedulerRoot,
+        store,
+        agentDirectory,
         nativeScheduler,
         id,
         instructions,
@@ -302,21 +307,23 @@ export default function registerScheduler(pi: ExtensionAPI): void {
         skills,
         model,
         thinkingLevel,
-        notify,
-        workingDirectory: ctx.cwd,
         isProjectTrusted: ctx.isProjectTrusted()
       });
-      return {
-        content: [{ type: "text", text: `Created scheduled task: ${task.id}\n${formatScheduledTask(task, null)}` }],
-        details: { action: params.action, id, status: "created" }
-      };
+      return formatSchedulerTaskResult({ action: "create", task, run: null });
+    },
+    renderCall(args, theme) {
+      return renderSchedulerCall({ args, theme });
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      return renderSchedulerResult({ details: result.details, expanded, isPartial, theme });
     }
   });
 }
 
 async function createScheduledTask({
   executeCommand,
-  schedulerRoot,
+  store,
+  agentDirectory,
   nativeScheduler,
   id,
   instructions,
@@ -325,47 +332,44 @@ async function createScheduledTask({
   skills,
   model,
   thinkingLevel,
-  workingDirectory,
-  notify,
   isProjectTrusted
-}: CreateScheduledTaskParams): Promise<ScheduledTask> {
-  const paths = buildTaskPaths({ schedulerRoot, id });
-  const task: ScheduledTask = {
-    id,
-    scheduler: nativeScheduler.kind,
-    schedule,
-    workingDirectory,
-    tools,
-    skills: skills.map((skill) => skill.name),
-    model,
-    thinkingLevel,
-    notify,
-    createdAt: new Date().toISOString(),
-    instructionsPath: paths.instructions,
-    stdoutPath: paths.stdout,
-    stderrPath: paths.stderr
-  };
-
+}: CreateScheduledTaskParams): Promise<StoredSchedulerTask> {
+  const paths = store.getTaskPaths({ id });
   let hasCreatedState = false;
   try {
-    await createTaskState({ schedulerRoot, task, instructions });
-    hasCreatedState = true;
     const args = buildScheduledPiArgs({
-      instructionsPath: paths.instructions,
+      instructionsPath: paths.instructionsPath,
       isProjectTrusted,
       model,
       skills,
       thinkingLevel,
       tools
     });
-    const invocation = getPiInvocation(args);
-    const lastRunPath = notify ? paths.lastRun : undefined;
+    const childInvocation = getPiInvocation(args);
+    const task = await store.createTask({
+      id,
+      scheduler: nativeScheduler.kind,
+      schedule,
+      instructions,
+      tools,
+      skills: skills.map((skill) => skill.name),
+      ...(model === undefined ? {} : { model }),
+      ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
+      childCommand: childInvocation.command,
+      childArgs: childInvocation.args,
+      environment: childInvocation.environment
+    });
+    hasCreatedState = true;
+    const invocation = buildSchedulerRunnerInvocation({
+      agentDirectory,
+      workspacePath: task.workspacePath,
+      id
+    });
 
     if (nativeScheduler.kind === "launchd") {
       await installLaunchdTask({
         task,
         invocation,
-        lastRunPath,
         executeCommand,
         launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
         userId: nativeScheduler.userId
@@ -374,28 +378,24 @@ async function createScheduledTask({
       await installSystemdTask({
         task,
         invocation,
-        lastRunPath,
         executeCommand,
         userUnitDirectory: getSystemdUserUnitDirectory()
       });
     }
+    return task;
   } catch (error) {
-    if (hasCreatedState) await rm(paths.directory, { recursive: true, force: true });
+    if (hasCreatedState) await store.removeTaskState({ id });
     throw new Error(`Could not create scheduled task ${id}: ${formatError(error)}`, { cause: error });
   }
-
-  return task;
 }
 
 async function removeScheduledTask({
   executeCommand,
-  schedulerRoot,
+  store,
   nativeScheduler,
   id
 }: RemoveScheduledTaskParams): Promise<void> {
-  const paths = buildTaskPaths({ schedulerRoot, id });
-  if (!existsSync(paths.metadata)) throw new Error(`Scheduled task does not exist: ${id}`);
-  const task = await readScheduledTask(paths.metadata);
+  const task = await store.readTask({ id });
   if (task.scheduler !== nativeScheduler.kind) {
     throw new Error(`Scheduled task ${id} belongs to ${task.scheduler}, not ${nativeScheduler.kind}.`);
   }
@@ -403,18 +403,18 @@ async function removeScheduledTask({
   if (nativeScheduler.kind === "launchd") {
     await removeLaunchdTask({
       executeCommand,
-      id,
+      id: task.nativeId,
       launchAgentsDirectory: join(homedir(), "Library", "LaunchAgents"),
       userId: nativeScheduler.userId
     });
   } else {
     await removeSystemdTask({
       executeCommand,
-      id,
+      id: task.nativeId,
       userUnitDirectory: getSystemdUserUnitDirectory()
     });
   }
-  await rm(paths.directory, { recursive: true, force: true });
+  await store.removeTaskState({ id });
 }
 
 type AssertSchedulerAvailableParams = {
@@ -496,28 +496,4 @@ function getScheduledPath(): string {
 function formatChildModel(model: ChildModel | undefined): string | undefined {
   if (!model) return undefined;
   return `${model.provider}/${model.id}`;
-}
-
-function formatScheduledTask(task: ScheduledTask, lastRun: LastRun | null): string {
-  const model = task.model ?? "Pi default";
-  const thinkingLevel = task.thinkingLevel ?? "Pi default";
-  const skills = task.skills.length > 0 ? task.skills.join(", ") : "none";
-  const lastRunLine = formatLastRunLine(lastRun);
-  return `${task.id}\nSchedule: ${formatSchedule(task.schedule)}\nDirectory: ${task.workingDirectory}\nModel: ${model}\nThinking: ${thinkingLevel}\nTools: ${task.tools.join(", ")}\nSkills: ${skills}\n${lastRunLine}Output: ${task.stdoutPath}\nErrors: ${task.stderrPath}`;
-}
-
-function formatLastRunLine(lastRun: LastRun | null): string {
-  if (!lastRun) return "Last run: never\n";
-  const status = lastRun.exitCode === 0 ? "success" : `failed (exit ${lastRun.exitCode})`;
-  return `Last run: ${status} at ${lastRun.timestamp}\n`;
-}
-
-async function formatOutput(output: string): Promise<string> {
-  const truncated = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
-  if (!truncated.truncated) return output;
-
-  const directory = await mkdtemp(join(tmpdir(), "opi-scheduler-"));
-  const outputPath = join(directory, "output.txt");
-  await writeFile(outputPath, output, "utf8");
-  return `${truncated.content}\n\n[Output truncated from ${formatSize(truncated.totalBytes)}. Full output: ${outputPath}]`;
 }

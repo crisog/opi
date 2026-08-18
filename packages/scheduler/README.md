@@ -2,7 +2,7 @@
 
 Native recurring scheduled tasks for Pi.
 
-The package adds one `scheduler` tool. Each task runs an isolated, non-interactive Pi process with self-contained instructions and explicit capabilities. Scheduled children do not load extensions, preventing recursive scheduler invocation.
+The package adds one `scheduler` tool. Each task runs an isolated, non-interactive Pi process with self-contained instructions and explicit capabilities. Scheduled children do not load extensions, preventing recursive scheduler invocation. Tasks and their latest results are scoped to the workspace where they were created.
 
 Supported platforms:
 
@@ -62,13 +62,19 @@ List tasks:
 { "action": "list" }
 ```
 
+Inspect the latest run and read its bounded result:
+
+```json
+{ "action": "status", "id": "weekday-check" }
+```
+
 Remove a task:
 
 ```json
 { "action": "remove", "id": "weekday-check" }
 ```
 
-List output includes each task's stdout and stderr paths. Output accumulates across runs.
+`list` shows the latest state for each task in the current workspace. `status` shows `never_run`, `running`, `completed`, or `failed`; completed results are bounded for model context and include the stable full-result path when truncated. The scheduler keeps one replaceable latest result plus stdout and stderr diagnostics per task.
 
 The scheduler preserves the current `PATH` and Pi configuration directory for each native job. It does not persist API keys or other shell environment variables; configure provider authentication through Pi's `/login` flow or persistent provider configuration before scheduling a task.
 
