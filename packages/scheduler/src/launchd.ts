@@ -15,7 +15,6 @@ const LAUNCHD_LABEL_PREFIX = "com.opi.scheduler";
 type RenderLaunchdPlistParams = {
   task: ScheduledTask;
   invocation: PiInvocation;
-  lastRunPath: string | undefined;
 };
 
 type InstallLaunchdTaskParams = RenderLaunchdPlistParams & {
@@ -42,8 +41,8 @@ function getLaunchdPlistPath({
   return join(launchAgentsDirectory, `${getLaunchdLabel(id)}.plist`);
 }
 
-export function renderLaunchdPlist({ task, invocation, lastRunPath }: RenderLaunchdPlistParams): string {
-  const label = getLaunchdLabel(task.id);
+export function renderLaunchdPlist({ task, invocation }: RenderLaunchdPlistParams): string {
+  const label = getLaunchdLabel(task.nativeId ?? task.id);
   let schedule: string;
   if (task.schedule.kind === "interval") {
     schedule = renderStartInterval(task.schedule);
@@ -51,14 +50,9 @@ export function renderLaunchdPlist({ task, invocation, lastRunPath }: RenderLaun
     schedule = renderCalendarInterval(task.schedule);
   }
 
-  let programArguments: string;
-  if (lastRunPath !== undefined) {
-    programArguments = renderNotifyWrapper({ invocation, lastRunPath });
-  } else {
-    programArguments = [invocation.command, ...invocation.args]
-      .map((argument) => `      <string>${escapeXml(argument)}</string>`)
-      .join("\n");
-  }
+  const programArguments = [invocation.command, ...invocation.args]
+    .map((argument) => `      <string>${escapeXml(argument)}</string>`)
+    .join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -82,10 +76,6 @@ ${programArguments}
   ${schedule}
   <key>ProcessType</key>
   <string>Background</string>
-  <key>StandardOutPath</key>
-  <string>${escapeXml(task.stdoutPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${escapeXml(task.stderrPath)}</string>
 </dict>
 </plist>
 `;
@@ -94,15 +84,15 @@ ${programArguments}
 export async function installLaunchdTask({
   task,
   invocation,
-  lastRunPath,
   executeCommand,
   launchAgentsDirectory,
   userId
 }: InstallLaunchdTaskParams): Promise<string> {
   await mkdir(launchAgentsDirectory, { recursive: true });
-  const plistPath = getLaunchdPlistPath({ launchAgentsDirectory, id: task.id });
+  const nativeId = task.nativeId ?? task.id;
+  const plistPath = getLaunchdPlistPath({ launchAgentsDirectory, id: nativeId });
   if (existsSync(plistPath)) throw new Error(`launchd task already exists: ${task.id}`);
-  await writeFile(plistPath, renderLaunchdPlist({ task, invocation, lastRunPath }), {
+  await writeFile(plistPath, renderLaunchdPlist({ task, invocation }), {
     encoding: "utf8",
     mode: 0o600,
     flag: "wx"
@@ -173,26 +163,4 @@ function escapeXml(value: string): string {
 
 function isMissingService(result: { stdout: string; stderr: string }): boolean {
   return /could not find service|service not found/u.test(`${result.stdout}\n${result.stderr}`.toLowerCase());
-}
-
-type RenderNotifyWrapperParams = {
-  invocation: PiInvocation;
-  lastRunPath: string;
-};
-
-function renderNotifyWrapper({ invocation, lastRunPath }: RenderNotifyWrapperParams): string {
-  const piCommand = buildShellSafeCommand(invocation.command, invocation.args);
-  const shellCommand = `${piCommand}; code=$?; echo '{"exitCode":'$code',"timestamp":"'$(date -Iseconds)'"}' > '${lastRunPath}'; exit $code`;
-  return `      <string>/bin/bash</string>
-      <string>-c</string>
-      <string>${escapeXml(shellCommand)}</string>`;
-}
-
-function buildShellSafeCommand(command: string, args: string[]): string {
-  const quoted = [command, ...args].map(quoteShellArg).join(" ");
-  return quoted;
-}
-
-function quoteShellArg(arg: string): string {
-  return `'${arg.replaceAll("'", "'\\''")}'`;
 }
