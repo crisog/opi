@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import {
+import registerSubagent, {
   buildChildArgs,
+  buildJobChildArgs,
   buildReviewChildArgs,
   executeReview,
   executeTask,
@@ -15,6 +16,19 @@ import {
   parseReviewResult,
   resolveRequestedSkills
 } from "../src/index.ts";
+
+test("registers synchronous and durable subagent tools", () => {
+  const toolNames: string[] = [];
+  const pi = {
+    registerTool(tool: { name: string }) {
+      toolNames.push(tool.name);
+    }
+  } as unknown as ExtensionAPI;
+
+  registerSubagent(pi);
+
+  assert.deepEqual(toolNames, ["subagent", "subagent_job"]);
+});
 
 test("builds an isolated child invocation with the selected model and thinking level", () => {
   const args = buildChildArgs({
@@ -138,6 +152,32 @@ test("builds a read-only isolated review invocation", () => {
     "--thinking",
     "high",
     "Review from an immutable patch"
+  ]);
+});
+
+test("builds a read-only isolated durable job invocation", () => {
+  const args = buildJobChildArgs({
+    model: "openai-codex/gpt-5.6-luna",
+    thinkingLevel: "high"
+  });
+
+  assert.deepEqual(args, [
+    "--mode",
+    "json",
+    "--print",
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--tools",
+    "read,grep,find,ls",
+    "--system-prompt",
+    "You are a read-only analysis subagent. Inspect the requested scope without modifying it and return a concise, evidence-grounded result.",
+    "--approve",
+    "--model",
+    "openai-codex/gpt-5.6-luna",
+    "--thinking",
+    "high"
   ]);
 });
 

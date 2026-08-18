@@ -6,11 +6,16 @@ import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   formatSize,
+  getAgentDir,
   truncateHead,
   type ExtensionAPI
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
+import { formatJobList, formatJobResult, type JobToolDetails } from "./job-output.ts";
+import { renderJobCall, renderJobResult } from "./job-renderer.ts";
+import { startSubagentJob, waitForSubagentJob } from "./job-service.ts";
+import { createJobStore } from "./job-store.ts";
 
 const REVIEW_KINDS = ["task", "review"] as const;
 const REVIEW_SEVERITIES = ["high", "medium", "low"] as const;
@@ -19,6 +24,8 @@ const REVIEW_VERDICTS = ["approve", "changes_requested", "review_failed"] as con
 const REVIEW_READ_ONLY_TOOLS = "read,grep,find,ls";
 const REVIEW_SYSTEM_PROMPT =
   "You are an independent code reviewer. Inspect the requested scope without modifying it, ground findings in repository evidence, and return only the requested verdict format.";
+const JOB_SYSTEM_PROMPT =
+  "You are a read-only analysis subagent. Inspect the requested scope without modifying it and return a concise, evidence-grounded result.";
 const MAX_REVIEW_BASE_LENGTH = 200;
 const MAX_REVIEW_BRIEF_LENGTH = 8_000;
 const MAX_REVIEW_SUMMARY_LENGTH = 500;
@@ -29,6 +36,7 @@ const MAX_SKILL_NAME_LENGTH = 64;
 const SKILL_NAME_PATTERN = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
 const TASK_DIRECTORY_PREFIX = "opi-subagent-task-";
 const TASK_PROMPT_FILE_NAME = "task.md";
+const JOB_ID_PATTERN = "^[0-9a-f-]+$";
 
 const REVIEW_FINDING_SCHEMA = Type.Object(
   {
@@ -101,6 +109,31 @@ const SUBAGENT_PARAMS = Type.Object({
   )
 });
 
+const SUBAGENT_JOB_PARAMS = Type.Union([
+  Type.Object(
+    {
+      action: Type.Literal("start"),
+      task: Type.String({ minLength: 1 }),
+      model: Type.Optional(Type.String({ minLength: 1 })),
+      thinkingLevel: Type.Optional(THINKING_LEVEL_SCHEMA)
+    },
+    { additionalProperties: false }
+  ),
+  Type.Object(
+    {
+      action: Type.Union([Type.Literal("status"), Type.Literal("wait"), Type.Literal("cancel")]),
+      jobId: Type.String({ minLength: 1, pattern: JOB_ID_PATTERN })
+    },
+    { additionalProperties: false }
+  ),
+  Type.Object(
+    {
+      action: Type.Literal("list")
+    },
+    { additionalProperties: false }
+  )
+]);
+
 type ChildResponse = {
   text?: string;
   stopReason?: string;
@@ -146,6 +179,11 @@ type BuildReviewChildArgsParams = {
   model?: string;
   thinkingLevel?: string;
   task: string;
+};
+
+type BuildJobChildArgsParams = {
+  model?: string;
+  thinkingLevel?: string;
 };
 
 export type ReviewFinding = Static<typeof REVIEW_FINDING_SCHEMA>;
@@ -241,6 +279,25 @@ export function buildReviewChildArgs({ model, thinkingLevel, task }: BuildReview
   ];
   appendModelArgs({ args, model, thinkingLevel });
   args.push(task);
+  return args;
+}
+
+export function buildJobChildArgs({ model, thinkingLevel }: BuildJobChildArgsParams): string[] {
+  const args = [
+    "--mode",
+    "json",
+    "--print",
+    "--no-session",
+    "--no-extensions",
+    "--no-skills",
+    "--no-prompt-templates",
+    "--tools",
+    REVIEW_READ_ONLY_TOOLS,
+    "--system-prompt",
+    JOB_SYSTEM_PROMPT,
+    "--approve"
+  ];
+  appendModelArgs({ args, model, thinkingLevel });
   return args;
 }
 
@@ -651,6 +708,62 @@ export default function registerSubagent(pi: ExtensionAPI): void {
           outputPath: output.outputPath
         }
       };
+    }
+  });
+
+  pi.registerTool<typeof SUBAGENT_JOB_PARAMS, JobToolDetails>({
+    name: "subagent_job",
+    label: "Subagent Job",
+    description: "Start and manage durable read-only Pi subagent jobs.",
+    promptSnippet: "Start or inspect a durable read-only subagent job",
+    promptGuidelines: [
+      "Use start for read-only analysis that should continue independently of this tool call.",
+      "Use wait when the result is needed now; aborting wait does not cancel the job.",
+      "Use status or list to inspect existing jobs, and cancel only when the background work is no longer needed."
+    ],
+    parameters: SUBAGENT_JOB_PARAMS,
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      if (params.action === "start") {
+        if (!ctx.isProjectTrusted()) throw new Error("Durable subagent jobs require a trusted project.");
+        const model = params.model ?? formatChildModel(ctx.model);
+        const thinkingLevel = params.thinkingLevel ?? ctx.thinkingLevel;
+        const invocation = getPiInvocation();
+        const job = await startSubagentJob({
+          agentDirectory: getAgentDir(),
+          workspacePath: ctx.cwd,
+          task: params.task,
+          childCommand: invocation.command,
+          childArgs: [...invocation.args, ...buildJobChildArgs({ model, thinkingLevel })],
+          ...(model === undefined ? {} : { model }),
+          ...(thinkingLevel === undefined ? {} : { thinkingLevel })
+        });
+        return formatJobResult({ action: "start", job });
+      }
+
+      const store = await createJobStore({ agentDirectory: getAgentDir(), workspacePath: ctx.cwd });
+      if (params.action === "list") return formatJobList(await store.listJobs());
+      if (params.action === "status") {
+        return formatJobResult({ action: "status", job: await store.readJob({ jobId: params.jobId }) });
+      }
+      if (params.action === "cancel") {
+        return formatJobResult({
+          action: "cancel",
+          job: await store.requestCancellation({ jobId: params.jobId })
+        });
+      }
+
+      const current = await store.readJob({ jobId: params.jobId });
+      if (current.kind === "queued" || current.kind === "running" || current.kind === "cancel_requested") {
+        onUpdate?.(await formatJobResult({ action: "wait", job: current }));
+      }
+      const terminal = await waitForSubagentJob({ store, jobId: params.jobId, signal });
+      return formatJobResult({ action: "wait", job: terminal });
+    },
+    renderCall(args, theme) {
+      return renderJobCall({ args, theme });
+    },
+    renderResult(result, { expanded, isPartial }, theme) {
+      return renderJobResult({ details: result.details, expanded, isPartial, theme });
     }
   });
 }
